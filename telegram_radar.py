@@ -1849,6 +1849,7 @@ def run_radar(category, chain="sol"):
                 record = {"chain":chain,"address":mint,"category":category,"score":score,
                           "pumpfun_confirmed":chain=="sol" and pumpfun_origin(pair.get("gmgn") or {}),
                           "price":num(pair.get("priceUsd")),
+                          "market_cap":num(pair.get("marketCap")) or num(pair.get("fdv")),
                           "liquidity":num((pair.get("liquidity") or {}).get("usd")),
                           "symbol":(pair.get("baseToken") or {}).get("symbol"),
                           "name":(pair.get("baseToken") or {}).get("name"),
