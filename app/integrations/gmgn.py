@@ -116,3 +116,32 @@ def fetch_token_price(chain: str, address: str) -> float | None:
         import logging
         logging.warning("Position price unavailable for %s:%s (%s)",chain,address[:8],type(exc).__name__)
     return None
+
+def fetch_token_market_cap(chain: str, address: str) -> float | None:
+    """Get reported market cap, never substitute FDV for circulating market cap."""
+    if chain not in ("sol","eth") or not address:
+        return None
+    key=os.environ.get("GMGN_API_KEY","").strip()
+    if not key:
+        return None
+    req=Request(f"{HOST}/v1/token/info?"+urlencode({"chain":chain,"address":address}),headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
+    try:
+        with urlopen(req,timeout=15) as resp:
+            result=json.load(resp)
+        if str(result.get("code","0"))!="0":
+            return None
+        data=result.get("data",result)
+        if not isinstance(data,dict):
+            return None
+        for node in (data,data.get("token"),data.get("token_info"),data.get("info")):
+            if isinstance(node,dict):
+                for field in ("market_cap","usd_market_cap","marketCap"):
+                    try:
+                        value=float(node.get(field))
+                        if 0<value<1e15:
+                            return value
+                    except (TypeError,ValueError):
+                        pass
+    except (HTTPError,URLError,TimeoutError,ValueError,TypeError):
+        pass
+    return None
