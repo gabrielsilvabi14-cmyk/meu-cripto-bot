@@ -242,10 +242,14 @@ def signal_worker():
                             reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
                         elif not price:
                             reason="preço inválido"
+                        elif signal.get("migration_source") not in ("migration_explicit", "completed_pool_created_proxy"):
+                            reason="MIGRAÇÃO DESCONHECIDA: fonte de horário não verificada; compra bloqueada"
                         elif not isinstance(signal.get("migration_timestamp"), (int, float)) or isinstance(signal.get("migration_timestamp"), bool):
-                            reason="horário de migração não verificável; compra bloqueada"
+                            reason="MIGRAÇÃO DESCONHECIDA: timestamp ausente ou inválido; compra bloqueada"
                         elif not (0 <= time.time()-float(signal["migration_timestamp"]) <= 360):
-                            reason="migração há mais de 6 minutos (ou horário inválido); compra bloqueada"
+                            reason=("MIGRAÇÃO ANTIGA: mais de 6 minutos desde " +
+                                    ("migração explícita" if signal["migration_source"]=="migration_explicit" else "criação do pool concluído (proxy)") +
+                                    "; compra bloqueada")
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
@@ -256,7 +260,7 @@ def signal_worker():
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
-                                logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
+                                logging.info("PAPER BUY from Telegram Radar %s: %s migration_source=%s age_seconds=%.1f",key,event,signal.get("migration_source"),time.time()-float(signal["migration_timestamp"]))
                                 save()
                             except (ValueError,KeyError) as exc:
                                 reason=str(exc)
