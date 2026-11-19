@@ -135,35 +135,64 @@ def poll():
                         ACCOUNT.evaluate_exit(key, current[key])
                     except (ValueError, KeyError) as exc:
                         logging.warning("Paper exit skipped: %s", type(exc).__name__)
-            # Conservative Telegram-inspired screening; ETH only until SOL origin validated.
-            # Trade only tokens already approved and alerted by Telegram Radar.
-            global RADAR_SIGNAL_OFFSET
-            try:
-                with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
-                    journal.seek(RADAR_SIGNAL_OFFSET)
-                    records = journal.readlines()
-                    RADAR_SIGNAL_OFFSET = journal.tell()
-                for line in records:
-                    try:
-                        signal=json.loads(line)
-                        key=signal["chain"]+":"+signal["address"]
-                        price=valid_price(signal.get("price"))
-                        liquidity=valid_price(signal.get("liquidity"))
-                        if time.time()-float(signal.get("timestamp",0))>1800:
-                            continue
-                        if signal["chain"] not in ("eth","sol") or not price or not liquidity:
-                            continue
-                        if signal["chain"]=="sol" and not signal.get("pumpfun_confirmed"):
-                            continue
-                        if key not in ACCOUNT.positions and len(ACCOUNT.positions)<ACCOUNT.config.max_open_positions:
-                            ACCOUNT.buy(key,signal["chain"],price,liquidity)
-                            LAST_PRICES[key]=price
-                    except (ValueError,KeyError,TypeError):
-                        continue
-            except OSError:
-                pass
+            # Conservative Telegram-inspired screening;
             save()
+
         time.sleep(288)
+
+
+
+def signal_worker():
+    """Read Telegram-approved signals promptly and explain every paper decision."""
+    global RADAR_SIGNAL_OFFSET
+    logging.info("Paper signal consumer started")
+    while True:
+        try:
+            with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
+                journal.seek(RADAR_SIGNAL_OFFSET)
+                lines=journal.readlines()
+                RADAR_SIGNAL_OFFSET=journal.tell()
+            for line in lines:
+                try:
+                    signal=json.loads(line)
+                    chain=signal["chain"]
+                    key=chain+":"+signal["address"]
+                    price=valid_price(signal.get("price"))
+                    liquidity=valid_price(signal.get("liquidity"))
+                    reason=None
+                    with LOCK:
+                        if time.time()-float(signal.get("timestamp",0))>1800:
+                            reason="sinal expirado"
+                        elif chain not in ("sol","eth"):
+                            reason="rede não habilitada"
+                        elif chain=="sol" and not signal.get("pumpfun_confirmed"):
+                            reason="origem Pump.fun não confirmada"
+                        elif not price:
+                            reason="preço inválido"
+                        elif not liquidity:
+                            reason="liquidez inválida"
+                        elif key in ACCOUNT.positions:
+                            reason="posição já aberta"
+                        else:
+                            try:
+                                event=ACCOUNT.buy(key,chain,price,liquidity)
+                                LAST_PRICES[key]=price
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
+                                logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
+                                save()
+                            except (ValueError,KeyError) as exc:
+                                reason=str(exc)
+                        if reason:
+                            logging.info("PAPER SKIP %s: %s",key,reason)
+                            MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
+                        MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
+                except (ValueError,KeyError,TypeError) as exc:
+                    logging.warning("Malformed radar signal: %s",type(exc).__name__)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning("Signal journal unavailable: %s",type(exc).__name__)
+        time.sleep(2)
 
 @app.on_event("startup")
 def startup():
@@ -175,6 +204,7 @@ def startup():
     else:
         logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
     threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
+    threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
 
 @app.middleware("http")
 async def headers(request, call_next):
@@ -224,7 +254,7 @@ def status():
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
-                "market": dict(MARKET), "timestamp": datetime.now(timezone.utc).isoformat(),
+                "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
 
 @app.post("/api/paper/reset")
