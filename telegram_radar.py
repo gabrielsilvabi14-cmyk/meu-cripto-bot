@@ -574,6 +574,15 @@ def discover(category, chain="sol"):
             ),
             reverse=True,
         )
+        # Prioritize confirmed Pump.fun candidates before filling the discovery cap.
+        # Unknown origin is not assumed to be Pump.fun.
+        if chain == "sol":
+            trench_volume_rows.sort(
+                key=lambda item: pumpfun_origin(item), reverse=True
+            )
+            trench_accel_rows.sort(
+                key=lambda item: pumpfun_origin(item), reverse=True
+            )
         trench_candidates = balanced_slice(
             trench_volume_rows, trench_accel_rows, MAX_CANDIDATOS
         )
@@ -1925,10 +1934,17 @@ def run_radar(category, chain="sol"):
             if final_score <= 60:
                 rejections["pontuação de 60 ou menos"] = rejections.get("pontuação de 60 ou menos", 0) + 1
                 continue
+            migrated_at, migration_source, _ = migration_evidence(pair)
+            migration_age = time.time() - migrated_at if migrated_at is not None else None
+            actionable = (migration_source in ("migration_explicit", "completed_pool_created_proxy")
+                          and migration_age is not None and 0 <= migration_age <= 600)
+            # Keep high-return setups, but prioritize actionable paper-entry windows.
             alert_priority = 1 if f.get("pattern_override") else 0
-            approved.append((alert_priority, final_score, mint, pair, f))
-        approved.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        for _priority, score, mint, pair, f in approved[:MAX_ALERTAS]:
+            approved.append((int(actionable), alert_priority, final_score, mint, pair, f))
+        approved.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        log.info("RADAR PAPER WINDOW %s/%s actionable=%d approved=%d",
+                 chain, category, sum(item[0] for item in approved), len(approved))
+        for _actionable, _priority, score, mint, pair, f in approved[:MAX_ALERTAS]:
             if was_sent(f"{chain}:{mint}") or was_sent(mint) or intelligence.recently_sent(chain, mint):
                 continue
             gmgn_audit_enrich(pair)
