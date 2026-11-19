@@ -49,13 +49,25 @@ async function refresh(){
   setValue('lastcheck',m.last_check?new Date(m.last_check).toLocaleString('pt-BR'):'Aguardando');
   setValue('cycles',m.cycles||0);
   setValue('errors',Object.entries(m.errors||{}).map(([k,v])=>k.toUpperCase()+': '+v).join(' | ')||'Sem erros registrados');
-  setValue('cash',usd(d.cash_usd));setValue('equity',usd(d.estimated_equity_usd));
+  setValue('cash',usd(d.cash_usd));setValue('equity',usd(d.estimated_equity_usd));setValue('initial-capital',usd(d.initial_paper_capital_usd));
   const pnl=typeof d.estimated_equity_usd==='number'?d.estimated_equity_usd-Number(d.initial_paper_capital_usd||100):null;
   setValue('pnl',usd(pnl));$('pnl').className='value '+(pnl===null?'':pnl>=0?'positive':'negative');
   setValue('position-count',positions.length);setValue('events',trades.length+' eventos');
+  const closed=trades.filter(t=>t.action==='PAPER_SELL');setValue('closed-count',closed.length+' fechamentos');
   const meta=new Map(tokens.map(t=>[t.chain+':'+t.address,t]));
   const pos=$('positions');pos.replaceChildren();positions.forEach(p=>renderPosition(pos,p,meta));
   if(!positions.length)pos.textContent='Nenhuma posição aberta no momento.';
+  const closedBox=$('closed-trades');closedBox.replaceChildren();
+  for(const t of closed.slice(-30).reverse()){
+    const [chain,address]=splitToken(t.token);const known=meta.get(t.token)||{};const item=node('div','','token-row');
+    item.append(node('strong',(known.symbol||'Token')+' · '+chain.toUpperCase()+' · '+(t.fraction===1?'Venda total':'Venda parcial')));
+    const result=Number(t.realized_pnl_usd);const gain=Number.isFinite(result)&&result>=0;
+    item.append(node('div',(gain?'Lucro: ':'Prejuízo: ')+usd(result)+' ('+(typeof t.realized_pnl_pct==='number'?pct(t.realized_pnl_pct):'percentual indisponível')+')','trade-result '+(gain?'positive':'negative')));
+    item.append(node('small','Recebido: '+usd(t.net_usd)+' · Custo da parte vendida: '+usd(t.cost_basis_usd),'trade-meta'));
+    if(t.timestamp)item.append(node('small',new Date(t.timestamp).toLocaleString('pt-BR'),'trade-meta'));
+    contractLink(item,chain,address);openButton(item,chain,address);closedBox.append(item);
+  }
+  if(!closed.length)closedBox.textContent='Nenhuma operação fechada até agora.';
   const history=$('trades');history.replaceChildren();trades.slice(-25).reverse().forEach(t=>renderTrade(history,t,meta));
   if(!trades.length)history.textContent='Nenhuma operação simulada.';
   const list=$('tokens');list.replaceChildren();tokens.forEach(t=>renderToken(list,t));
@@ -63,3 +75,20 @@ async function refresh(){
  }catch(e){setValue('connection','Falha ao consultar o painel');setValue('errors','Não foi possível atualizar os dados. Tente recarregar a página.')}
 }
 refresh();setInterval(refresh,30000);
+
+$('capital-form').addEventListener('submit',async e=>{
+ e.preventDefault();
+ const input=$('capital-input'),feedback=$('capital-feedback'),button=$('capital-submit');
+ const amount=Number(input.value);
+ if(!Number.isFinite(amount)||amount<10||amount>100000){feedback.textContent='Digite um valor entre US$ 10 e US$ 100.000.';return}
+ if(!window.confirm('Reiniciar a simulação com '+usd(amount)+'? Todas as posições e operações fictícias anteriores serão apagadas.'))return;
+ button.disabled=true;feedback.textContent='Reiniciando carteira fictícia...';
+ try{
+  const r=await fetch('/api/paper/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({capital_usd:amount,confirm_reset:true})});
+  const data=await r.json();
+  if(!r.ok)throw Error(data.error||'Erro ao reiniciar');
+  feedback.textContent='Carteira fictícia reiniciada com '+usd(amount)+'.';
+  await refresh();
+ }catch(err){feedback.textContent='Não foi possível reiniciar: '+err.message}
+ finally{button.disabled=false}
+});
