@@ -16,6 +16,8 @@ class Position:
     entry_market_cap: float | None = None
     stop_pct: float = 12.0
     target_pct: float = 50.0
+    last_mark_price: float | None = None
+    last_mark_at: str | None = None
 
 @dataclass
 class PaperAccount:
@@ -68,20 +70,27 @@ class PaperAccount:
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
         pnl = proceeds - cost_basis
-        event = {"action": "PAPER_SELL", "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
+        event = {"action": "PAPER_SELL", "exit_reason": getattr(pos, "_exit_reason", "manual"), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
     def evaluate_exit(self, token: str, price: float) -> dict | None:
-        """Stop -12%; partial sale of 50% at +25%, then remaining at +50%."""
+        """Evaluate configured price triggers using the latest available market observation."""
         pos = self.positions[token]
         self._valid(price)
+        pos.last_mark_price = price
+        pos.last_mark_at = datetime.now(timezone.utc).isoformat()
         change_pct = (price / pos.entry_price - 1) * 100
         if change_pct <= -pos.stop_pct:
+            pos._exit_reason = "stop_loss"
             return self.sell(token, price)
         if change_pct >= pos.target_pct:
+            pos._exit_reason = "profit_target"
             return self.sell(token, price)
         if change_pct >= pos.target_pct / 2 and not pos.partial_taken:
-            pos.partial_taken = True
-            return self.sell(token, price, 0.5)
+            pos._exit_reason = "partial_profit_target"
+            event = self.sell(token, price, 0.5)
+            if token in self.positions:
+                self.positions[token].partial_taken = True
+            return event
         return None
