@@ -450,10 +450,7 @@ def discover(category, chain="sol"):
             "launchpad_platform_v2": True,
             "limit": 80,
         }
-        # SOL fica restrita à Pump.fun na própria consulta e é validada
-        # novamente pelos metadados do token. ETH consulta as plataformas da rede.
-        if chain == "sol":
-            section["launchpad_platform"] = ["Pump.fun"]
+        # Todas as plataformas Solana, não somente Pump.fun.
         payload = {
             "version": "v2",
             **{token_type: dict(section) for token_type in types},
@@ -672,8 +669,6 @@ def discover(category, chain="sol"):
             info = gmgn_token_info(mint, chain)
             pair = gmgn_to_pair(row, category, info, chain)
             if not pair:
-                continue
-            if chain == "sol" and not pumpfun_origin(pair.get("gmgn") or {}):
                 continue
             found.append(pair)
         except Exception as exc:
@@ -1687,6 +1682,24 @@ def gmgn_accumulation_setup(pair, candles, resolution, features, strategy):
     }, "segunda perna após reacumulação" if second_leg else "base local despertando"
 
 
+def migration_timestamp(pair):
+    """Horário explícito de conclusão da migração. Nunca usar idade de criação."""
+    data = pair.get("gmgn") or {}
+    for node in (data, data.get("pool"), data.get("launchpad")):
+        if not isinstance(node, dict):
+            continue
+        for key in ("migration_timestamp", "migrated_at", "migrated_timestamp",
+                    "graduation_timestamp", "graduated_at", "completed_timestamp",
+                    "completed_at", "complete_timestamp"):
+            raw = num(node.get(key), default=None)
+            if raw is None or raw <= 0:
+                continue
+            ts = raw / 1000 if raw > 1e11 else raw
+            if 1577836800 <= ts <= time.time():
+                return ts
+    return None
+
+
 def migrated_wallet_limits(pair):
     data=pair.get("gmgn") or {}
     sources=[data]+[data[k] for k in ("stat","security","token_security","risk","dev") if isinstance(data.get(k),dict)]
@@ -1738,7 +1751,7 @@ def run_radar(category, chain="sol"):
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
             age=age_hours(pair)
-            if age is None or not (5/60 <= age <= 2):
+            if age is None or not (5/60 <= age <= 24):
                 rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
                 continue
             tx=(pair.get("txns") or {}).get("h1") or {}
@@ -1754,6 +1767,22 @@ def run_radar(category, chain="sol"):
             score, eligible, reason, f = intelligence.evaluate(
                 pair, strategy, age_hours(pair)
             )
+            # Estratégias aditivas: lançamento migrado e reversão após queda.
+            # Reversão não altera a regra de idade da migração no simulador.
+            reversal = None
+            if age > 2 or age >= 5/60:
+                try:
+                    candles, resolution = gmgn_kline_history(pair, chain)
+                    reversal, _ = gmgn_reversal_setup(pair, candles, resolution)
+                except Exception as exc:
+                    log.warning("Reversão K-line %s: %s", mint[:8], str(exc)[:120])
+            if reversal is not None:
+                pair["reversal_setup"] = reversal
+                score = min(100, score + 15)
+                f["setup_type"] = "reversão após queda"
+            if age > 2 and reversal is None:
+                rejections["fora da janela de lançamento sem reversão"] = rejections.get("fora da janela de lançamento sem reversão", 0) + 1
+                continue
             # New migrated-only strategy: safety, age and buy pressure were
             # checked above. Legacy reversal/accumulation and score thresholds
             # must not silently block these user-selected opportunities.
@@ -1822,6 +1851,7 @@ def run_radar(category, chain="sol"):
                       "liquidity":num((pair.get("liquidity") or {}).get("usd")),
                       "symbol":(pair.get("baseToken") or {}).get("symbol"),
                       "name":(pair.get("baseToken") or {}).get("name"),
+                      "migration_timestamp":migration_timestamp(pair),
                       "timestamp":time.time()}
             signal_path = os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl")
             signal_written = False
