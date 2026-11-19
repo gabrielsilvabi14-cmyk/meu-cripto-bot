@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.integrations.gmgn import fetch_rank, fetch_token_price
+from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap
 from app.trading.paper import PaperAccount
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +27,7 @@ STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
 LAST_PRICES = {}
+LAST_MARKET_CAPS = {}
 RADAR_PROCESS = None
 RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
 RADAR_SIGNAL_OFFSET = 0
@@ -135,6 +136,14 @@ def poll():
                         current[key] = price
                     time.sleep(2)
             LAST_PRICES.update(current)
+            for t in tokens:
+                mc=valid_price(t.get('market_cap'))
+                if mc: LAST_MARKET_CAPS[t['chain']+':'+t['address']]=mc
+            for key in list(ACCOUNT.positions):
+                chain,address=key.split(':',1)
+                mc=fetch_token_market_cap(chain,address)
+                if mc: LAST_MARKET_CAPS[key]=mc
+                time.sleep(1)
             # Exits only when a fresh, valid price is available for this cycle.
             for key in list(ACCOUNT.positions):
                 if key in current:
@@ -150,7 +159,7 @@ def poll():
 
 
 
-def buy_every_alert(key,chain,price):
+def buy_every_alert(key,chain,price,market_cap=None):
     """Independent $20 paper position for each alerted token; virtual funding is explicit."""
     global INITIAL_CAPITAL
     from app.trading.paper import Position
@@ -164,7 +173,7 @@ def buy_every_alert(key,chain,price):
         ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
-    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat())
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap)
     event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
     ACCOUNT.events.append(event)
     return event
@@ -198,8 +207,10 @@ def signal_worker():
                             reason="posição já aberta"
                         else:
                             try:
-                                event=buy_every_alert(key,chain,price)
+                                event=buy_every_alert(key,chain,price,valid_price(signal.get('market_cap')))
                                 LAST_PRICES[key]=price
+                                if valid_price(signal.get('market_cap')):
+                                    LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
                                 logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
                                 save()
@@ -263,6 +274,7 @@ def status():
                 equity += value
             positions.append({"token": key, "network": p.network, "quantity": p.quantity,
                               "entry_price": p.entry_price, "mark_price": mark,
+                              "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
                               "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd})
         token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
         for p in positions:
