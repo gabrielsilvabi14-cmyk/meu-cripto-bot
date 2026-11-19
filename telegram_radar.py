@@ -399,6 +399,35 @@ def gmgn_to_pair(row, category, info=None, chain="sol"):
     }
 
 
+def excluded_solana_pool(pair):
+    """Exclude Meteora and Dynamic launchpads/pools using explicit GMGN metadata."""
+    data = pair.get("gmgn") or {}
+    if not isinstance(data, dict):
+        return None
+    nodes = [data]
+    for key in ("pool", "launchpad", "platform", "token", "token_info"):
+        if isinstance(data.get(key), dict):
+            nodes.append(data[key])
+    fields = ("launchpad", "launchpad_name", "launchpad_platform",
+              "launch_platform", "platform", "platform_name",
+              "creation_platform", "source_platform", "exchange",
+              "dex", "dex_name", "amm", "amm_name", "pool_type",
+              "protocol", "protocol_name")
+    for node in nodes:
+        for key in fields:
+            value = node.get(key)
+            if isinstance(value, dict):
+                value = value.get("name") or value.get("platform") or value.get("id")
+            if not isinstance(value, str):
+                continue
+            normalized = "".join(ch for ch in value.lower() if ch.isalnum())
+            if "meteora" in normalized:
+                return "Meteora"
+            if "dynamic" in normalized or normalized in ("dlmm", "damm", "dammv2"):
+                return "Dynamic"
+    return None
+
+
 def pumpfun_origin(data):
     """Exige metadados explícitos de origem; endereço terminando em pump não basta."""
     nodes = [data]
@@ -1857,6 +1886,11 @@ def run_radar(category, chain="sol"):
 
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
+            excluded = excluded_solana_pool(pair) if chain == "sol" else None
+            if excluded:
+                reason = "plataforma excluída: " + excluded
+                rejections[reason] = rejections.get(reason, 0) + 1
+                continue
             age=age_hours(pair)
             if age is None or not (5/60 <= age <= 24):
                 rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
@@ -1922,6 +1956,10 @@ def run_radar(category, chain="sol"):
             if was_sent(f"{chain}:{mint}") or was_sent(mint) or intelligence.recently_sent(chain, mint):
                 continue
             gmgn_audit_enrich(pair)
+            excluded = excluded_solana_pool(pair) if chain == "sol" else None
+            if excluded:
+                log.info("RADAR SKIP sol:%s plataforma excluída após auditoria: %s", mint[:8], excluded)
+                continue
             try:
                 pair["whale_holders"] = gmgn_request(
                     "/v1/market/token_top_holders",
@@ -1951,8 +1989,7 @@ def run_radar(category, chain="sol"):
                 break
             # The Telegram message was accepted. Persist its paper signal before
             # registering the alert, and report any delivery failure explicitly.
-            lp_status, lp_reason = paper_lp_protection(pair)
-            log.info("PAPER LP AUDIT %s:%s status=%s reason=%s", chain, mint[:8], lp_status, lp_reason)
+            # LP remains informational; no LP burn/lock requirement for paper trades.
             migrated_at, migration_source, migration_field = migration_evidence(pair)
             log.info("PAPER MIGRATION EVIDENCE %s:%s source=%s field=%s age_seconds=%s", chain, mint[:8], migration_source, migration_field, round(time.time()-migrated_at,1) if migrated_at is not None else "unknown")
             record = {"chain":chain,"address":mint,"category":category,"score":score,
@@ -1965,8 +2002,6 @@ def run_radar(category, chain="sol"):
                       "migration_timestamp":migrated_at,
                       "migration_source":migration_source,
                       "migration_field":migration_field,
-                      "lp_protection_status":lp_status,
-                      "lp_protection_reason":lp_reason,
                       "timestamp":time.time()}
             signal_path = os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl")
             signal_written = False
