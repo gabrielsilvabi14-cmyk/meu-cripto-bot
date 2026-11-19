@@ -1687,7 +1687,7 @@ def gmgn_accumulation_setup(pair, candles, resolution, features, strategy):
 def migrated_wallet_limits(pair):
     data=pair.get("gmgn") or {}
     sources=[data]+[data[k] for k in ("stat","security","token_security","risk","dev") if isinstance(data.get(k),dict)]
-    checks={"top10":("top_10_holder_rate","top10_holder_rate","top10_holder_percent"),"bundlers":("bundler_rate","bundler_trader_amount_rate","top_bundler_trader_percentage"),"snipers":("top70_sniper_hold_rate","sniper_rate"),"insiders":("insider_rate",),"phishing_wallets":()}
+    checks={"top10":("top_10_holder_rate","top10_holder_rate","top10_holder_percent"),"bundlers":("bundler_rate","bundler_trader_amount_rate","top_bundler_trader_percentage"),"snipers":("top70_sniper_hold_rate","sniper_rate"),"insiders":("insider_rate",)}
     for label,names in checks.items():
         value=None
         for name in names:
