@@ -30,7 +30,7 @@ function renderPosition(container,p,meta){
  const card=node('div','','position');
  card.append(node('strong',(p.symbol||t.symbol||p.name||'Token')+' · '+chain.toUpperCase()));
  contractLink(card,chain,address);
- const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',p.mark_is_stale?'Indisponível (sem cotação recente)':mc(p.current_market_cap)],['Variação do preço',p.mark_is_stale?'—':pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-(p.stop_pct??12)/100))+' (estimado)':'—'],['Stop-loss',pct(-(p.stop_pct??12))],['Meta de lucro',pct(p.target_pct??50)],['Cotação',p.mark_is_stale?'⚠️ Sem cotação recente · stop não avaliado':'Atualizada'],['Último preço válido',p.last_mark_at?new Date(p.last_mark_at).toLocaleString('pt-BR'):'Ainda não disponível']];
+ const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',p.mark_is_stale?'Indisponível (sem cotação recente)':mc(p.current_market_cap)],['Variação do preço',p.mark_is_stale?'—':pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Maior preço observado',p.highest_price==null?'—':String(p.highest_price)],['Stop móvel (preço)',p.stop_price==null?'—':String(p.stop_price)],['Distância do stop',pct(-(p.stop_pct??30))],['Cotação',p.mark_is_stale?'⚠️ Sem cotação recente · stop não avaliado':'Atualizada'],['Último preço válido',p.last_mark_at?new Date(p.last_mark_at).toLocaleString('pt-BR'):'Ainda não disponível']];
  const grid=node('div','','position-grid');
  for(const [k,v] of fields){const item=document.createElement('div');item.append(node('small',k),node('b',v, k==='Resultado estimado'&&typeof p.unrealized_pnl_usd==='number'?(p.unrealized_pnl_usd>=0?'positive':'negative'):''));grid.append(item)}
  card.append(grid);openButton(card,chain,address);container.append(card);
@@ -67,7 +67,7 @@ async function refresh(){
   if(!document.activeElement?.closest?.('#settings-form')){
    if(typeof settings.operation_usd==='number')$('operation-usd').value=settings.operation_usd;
    if(typeof settings.stop_pct==='number')$('stop-pct').value=settings.stop_pct;
-   if(typeof settings.target_pct==='number')$('target-pct').value=settings.target_pct;
+
   }
   setValue('cash',usd(d.cash_usd));setValue('equity',usd(d.estimated_equity_usd));setValue('initial-capital',usd(d.initial_paper_capital_usd));
   const pnl=typeof d.estimated_equity_usd==='number'?d.estimated_equity_usd-Number(d.initial_paper_capital_usd||100):null;
@@ -116,9 +116,9 @@ $('capital-form').addEventListener('submit',async e=>{
 $('settings-form').addEventListener('submit',async e=>{
  e.preventDefault();
  const feedback=$('settings-feedback'),button=$('settings-submit');
- const values={operation_usd:Number($('operation-usd').value),stop_pct:Number($('stop-pct').value),target_pct:Number($('target-pct').value)};
- if(!Number.isFinite(values.operation_usd)||values.operation_usd<1||values.operation_usd>10000||!Number.isFinite(values.stop_pct)||values.stop_pct<0.1||values.stop_pct>95||!Number.isFinite(values.target_pct)||values.target_pct<1||values.target_pct>1000){
-  feedback.textContent='Confira os limites dos três campos.';return;
+ const values={operation_usd:Number($('operation-usd').value),stop_pct:Number($('stop-pct').value)};
+ if(!Number.isFinite(values.operation_usd)||values.operation_usd<1||values.operation_usd>10000||!Number.isFinite(values.stop_pct)||values.stop_pct<0.1||values.stop_pct>95){
+  feedback.textContent='Confira os limites dos dois campos.';return;
  }
  button.disabled=true;feedback.textContent='Salvando parâmetros...';
  try{
