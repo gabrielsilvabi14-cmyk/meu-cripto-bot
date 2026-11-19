@@ -29,6 +29,8 @@ MARKET = {"connected": False, "last_check": None, "last_success": None, "errors"
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
 LAST_PRICES = {}
 LAST_MARKET_CAPS = {}
+LAST_PRICE_SOURCE = {}
+PRICE_FAILURES = {}
 RADAR_PROCESS = None
 RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
 RADAR_SIGNAL_OFFSET = 0
@@ -160,10 +162,14 @@ def monitor_exits():
                     chain,address=key.split(":",1)
                     price=valid_price(fetch_token_price(chain,address))
                     if price is None:
-                        logging.warning("PAPER MARK unavailable %s; stop/target not evaluated",key)
+                        with LOCK:
+                            PRICE_FAILURES[key] = PRICE_FAILURES.get(key, 0) + 1
+                        logging.warning("PAPER MARK unavailable %s failures=%s; stop/target not evaluated",key, PRICE_FAILURES[key])
                         continue
                     with LOCK:
                         LAST_PRICES[key]=price
+                        LAST_PRICE_SOURCE[key]="GMGN or verified public pair"
+                        PRICE_FAILURES.pop(key, None)
                         if key in ACCOUNT.positions:
                             event=ACCOUNT.evaluate_exit(key,price)
                             if event:
@@ -311,22 +317,28 @@ def status():
                               "entry_price": p.entry_price, "mark_price": mark,
                               "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
                               "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
-                              "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
+                              "last_mark_at":p.last_mark_at,"quote_failures":PRICE_FAILURES.get(key,0),
+                              "mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>90})
         token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
         for p in positions:
             p.update(token_meta.get(p["token"], {}))
-            if p["mark_price"] and p["entry_price"]:
+            if p["mark_is_stale"]:
+                p["estimated_value_usd"] = None
+                p["unrealized_pnl_usd"] = None
+            if not p["mark_is_stale"] and p["mark_price"] and p["entry_price"] and p["estimated_value_usd"] is not None:
                 p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
                 p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
             paper_pos = ACCOUNT.positions[p["token"]]
             p["stop_pct"] = paper_pos.stop_pct
             p["target_pct"] = paper_pos.target_pct
             p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
+        if any(p["mark_is_stale"] for p in positions):
+            equity = None
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
-                "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
+                "estimated_equity_usd": round(equity, 4) if equity is not None and len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
                 "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
