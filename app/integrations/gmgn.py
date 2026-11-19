@@ -53,6 +53,17 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     rows = rows_from(data)
     if not rows:
         raise RuntimeError("GMGN respondeu, mas ranking veio vazio ou com formato não reconhecido")
+    def metric(item, *keys):
+        for k in keys:
+            v = item.get(k)
+            if isinstance(v, dict):
+                v = v.get("usd") or v.get("value")
+            try:
+                if v is not None and v != "":
+                    return float(v)
+            except (ValueError, TypeError):
+                pass
+        return None
     output = []
     for item in rows:
         if not isinstance(item, dict):
@@ -60,10 +71,18 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
         address = item.get("address") or item.get("token_address")
         if not address:
             continue
+        created = metric(item, "created_timestamp", "creation_timestamp", "open_timestamp")
+        if created and created > 1e11:
+            created /= 1000
+        age = (time.time() - created) / 3600 if created and created <= time.time() else None
         output.append({"chain": chain, "address": str(address)[:128],
                        "symbol": str(item.get("symbol") or "?")[:40],
                        "name": str(item.get("name") or "")[:100],
                        "price": item.get("price") or item.get("price_usd"), "liquidity": item.get("liquidity"),
                        "volume_1h": item.get("volume_1h") or item.get("volume"),
+                       "buys_1h": metric(item, "buys_1h", "buys"),
+                       "sells_1h": metric(item, "sells_1h", "sells"),
+                       "change_1h": metric(item, "price_change_percent1h", "price_change_percent", "change_1h"),
+                       "age_hours": age, "market_cap": metric(item, "market_cap", "usd_market_cap", "marketCap"),
                        "source": "GMGN ranking; sem validação Pump.fun"})
     return output
