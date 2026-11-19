@@ -45,7 +45,7 @@ JANELA_SAIDA_NEW = 30 * 60
 JANELAS_PROMOVIDOS = tuple(range(3 * 3600, 24 * 3600 + 1, 3 * 3600))
 TOLERANCIA_SAIDA_NEW = 2 * 60
 TOLERANCIA_PROMOVIDOS = 5 * 60
-MAX_CANDIDATOS = 20
+MAX_CANDIDATOS = 50
 MAX_ALERTAS = 3
 
 LIQ_MIN = 20000
@@ -572,17 +572,17 @@ def discover(category, chain="sol"):
             reverse=True,
         )
         trench_candidates = balanced_slice(
-            trench_volume_rows, trench_accel_rows, MAX_CANDIDATOS // 2
+            trench_volume_rows, trench_accel_rows, MAX_CANDIDATOS
         )
         momentum_candidates = balanced_slice(
             momentum_volume_rows, momentum_accel_rows,
-            MAX_CANDIDATOS - MAX_CANDIDATOS // 2
+            MAX_CANDIDATOS
         )
 
         selected = {}
         # Mantém o teto de candidatos e divide cada fonte entre volume absoluto
         # e aceleração relativa para alcançar rampas que ainda têm pouco volume.
-        for row in trench_candidates + momentum_candidates:
+        for row in trench_candidates:
             mint = row.get("address") or row.get("token_address")
             if mint:
                 key = str(mint).lower()
@@ -2266,7 +2266,7 @@ def main():
     load_state()
     threading.Thread(target=telegram_command_loop, daemon=True).start()
     telegram_send(
-        f"🤖 <b>RADAR SOLANA PUMP.FUN + ETHEREUM {VERSAO} ATIVO</b>\n"
+        f"🤖 <b>RADAR SOLANA PUMP.FUN {VERSAO} ATIVO</b>\n"
         "🚀 Oportunidades recentes e 🔥 continuidade de alta\n"
         "🛡️ Risco informativo e auditoria parcial\n"
         "🧪 Simulador de ordens GMGN disponível: /paper\n"
@@ -2280,15 +2280,12 @@ def main():
         if now >= next_new:
             cleanup()
             run_radar("new", "sol")
-            run_radar("new", "eth")
             try:
                 learn_outcomes()
             except Exception as exc:
                 log.warning("Aprendizado: %s", exc)
             next_new = time.monotonic() + INTERVALO
         if time.monotonic() >= next_promoted:
-            run_radar("trending", "sol")
-            run_radar("trending", "eth")
             next_promoted = time.monotonic() + max(900, INTERVALO)
         time.sleep(max(1, min(next_new, next_promoted) - time.monotonic()))
 
