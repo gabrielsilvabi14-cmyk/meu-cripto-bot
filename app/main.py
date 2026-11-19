@@ -110,9 +110,9 @@ def poll():
         with LOCK:
             MARKET["phase"] = "consultando GMGN"
             MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
-        for chain in ("sol", "eth"):
+        for chain in ("sol",):
             try:
-                found = fetch_rank(chain, limit=20)
+                found = fetch_rank(chain, limit=30)
                 tokens.extend(found)
                 chain_status[chain] = {"ok": True, "tokens": len(found)}
                 logging.info("GMGN %s returned %s tokens", chain, len(found))
@@ -120,12 +120,11 @@ def poll():
                 errors[chain] = str(exc)[:160]
                 chain_status[chain] = {"ok": False, "error": errors[chain]}
                 logging.warning("GMGN %s failed: %s", chain, errors[chain])
-            time.sleep(6)
         now = datetime.now(timezone.utc).isoformat()
         with LOCK:
             MARKET.update(connected=bool(tokens), last_check=now, errors=errors,
                           chain_status=chain_status, phase=("monitorando" if tokens else "erro na integração"),
-                          tokens=tokens[:40], cycles=MARKET["cycles"] + 1)
+                          tokens=tokens[:30], cycles=MARKET["cycles"] + 1)
             if tokens:
                 MARKET["last_success"] = now
             current = {}
@@ -142,7 +141,7 @@ def poll():
             # Conservative Telegram-inspired screening;
             save()
 
-        time.sleep(288)
+        time.sleep(60)
 
 
 
@@ -318,7 +317,7 @@ def status():
             p["target_pct"] = paper_pos.target_pct
             p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
-                "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
+                "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
