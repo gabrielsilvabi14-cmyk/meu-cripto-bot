@@ -246,8 +246,8 @@ def signal_worker():
                             reason="MIGRAÇÃO DESCONHECIDA: fonte de horário não verificada; compra bloqueada"
                         elif not isinstance(signal.get("migration_timestamp"), (int, float)) or isinstance(signal.get("migration_timestamp"), bool):
                             reason="MIGRAÇÃO DESCONHECIDA: timestamp ausente ou inválido; compra bloqueada"
-                        elif not (0 <= time.time()-float(signal["migration_timestamp"]) <= 360):
-                            reason=("MIGRAÇÃO ANTIGA: mais de 6 minutos desde " +
+                        elif not (0 <= time.time()-float(signal["migration_timestamp"]) <= 600):
+                            reason=("MIGRAÇÃO ANTIGA: mais de 10 minutos desde " +
                                     ("migração explícita" if signal["migration_source"]=="migration_explicit" else "criação do pool concluído (proxy)") +
                                     "; compra bloqueada")
                         elif key in ACCOUNT.positions:
