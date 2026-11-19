@@ -32,6 +32,7 @@ LAST_MARKET_CAPS = {}
 RADAR_PROCESS = None
 RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
 RADAR_SIGNAL_OFFSET = 0
+SIGNAL_STATS = {"received":0,"bought":0,"skipped":0,"last_error":None,"last_signal":None}
 
 
 def valid_price(v):
@@ -195,6 +196,8 @@ def signal_worker():
             for line in lines:
                 try:
                     signal=json.loads(line)
+                    SIGNAL_STATS["received"] += 1
+                    SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
                     chain=signal["chain"]
                     key=chain+":"+signal["address"]
                     price=valid_price(signal.get("price"))
@@ -218,20 +221,24 @@ def signal_worker():
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
+                                SIGNAL_STATS["bought"] += 1
                                 logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
                                 save()
                             except (ValueError,KeyError) as exc:
                                 reason=str(exc)
                         if reason:
+                            SIGNAL_STATS["skipped"] += 1
                             logging.info("PAPER SKIP %s: %s",key,reason)
                             MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
                         MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
-                except (ValueError,KeyError,TypeError) as exc:
-                    logging.warning("Malformed radar signal: %s",type(exc).__name__)
+                except Exception as exc:
+                    SIGNAL_STATS["last_error"] = str(exc)[:200]
+                    logging.exception("Paper signal processing FAILED: %s",type(exc).__name__)
         except FileNotFoundError:
             pass
-        except OSError as exc:
-            logging.warning("Signal journal unavailable: %s",type(exc).__name__)
+        except Exception as exc:
+            SIGNAL_STATS["last_error"] = str(exc)[:200]
+            logging.exception("Signal journal processing failed")
         time.sleep(2)
 
 @app.on_event("startup")
@@ -295,7 +302,7 @@ def status():
             p["stop_price"] = p["entry_price"] * (1 - p["stop_pct"] / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "initial_paper_capital_usd": INITIAL_CAPITAL,
+                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
