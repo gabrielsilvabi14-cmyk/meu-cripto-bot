@@ -1780,9 +1780,6 @@ def paper_lp_protection(pair):
                     expiry = timestamp(value[key])
                     if expiry is not None:
                         break
-            explicit_lp = (flag(value.get("is_lp_locked")) is True or
-                           flag(value.get("lp_locked")) is True or
-                           any(key in value for key in ("lp_locked_percent", "lp_lock_percent")))
             # Generic lock percentage can be used only inside an explicit lockInfo
             # structure with a future unlock time, never as an isolated pool ratio.
             if ratio is not None and ratio >= 95 and expiry is not None and expiry > now:
