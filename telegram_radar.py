@@ -1687,7 +1687,7 @@ def gmgn_accumulation_setup(pair, candles, resolution, features, strategy):
 def migrated_wallet_limits(pair):
     data=pair.get("gmgn") or {}
     sources=[data]+[data[k] for k in ("stat","security","token_security","risk","dev") if isinstance(data.get(k),dict)]
-    checks={"top10":("top_10_holder_rate","top10_holder_rate","top10_holder_percent"),"bundlers":("bundler_rate","bundler_trader_amount_rate","top_bundler_trader_percentage"),"snipers":("top70_sniper_hold_rate","sniper_rate"),"insiders":("insider_rate",)}
+    checks={"top10":("top_10_holder_rate","top10_holder_rate","top10_holder_percent"),"bundlers":("bundler_rate","bundler_trader_amount_rate","top_bundler_trader_percentage"),"snipers":("top70_sniper_hold_rate","sniper_rate")}
     for label,names in checks.items():
         value=None
         for name in names:
@@ -1698,41 +1698,18 @@ def migrated_wallet_limits(pair):
                         value=raw*100 if name.endswith("_rate") and raw<=1 else raw if not name.endswith("_rate") and raw<=100 else None
                     break
             if value is not None: break
-        if value is None:
-            if label=="insiders":
-                continue  # Sem dado de insiders: desconhecido, nunca zero.
-            return False,label+": percentual não verificável"
+        if value is None: return False,label+": percentual não verificável"
         if value>=30: return False,label+": limite de 30% atingido"
-    def find_value(*names):
-        for name in names:
-            for source in sources:
-                if source.get(name) is not None:
-                    return source[name]
-        return None
-    def as_bool(value):
-        if isinstance(value,bool): return value
-        if isinstance(value,(int,float)) and value in (0,1): return bool(value)
-        if isinstance(value,str) and value.strip().lower() in ("true","false","1","0"):
-            return value.strip().lower() in ("true","1")
-        return None
-    for label,names in (
-        ("NoMint",("is_mintable","mintable")),
-        ("Sem Blacklist",("is_blacklisted","blacklist")),
-        ("Excluir Wash Trading",("is_wash_trading",)),
-    ):
-        value=as_bool(find_value(*names))
-        if value is None: return False,label+": não verificável"
-        if value: return False,label+": risco identificado"
-    burned=None
-    for name in ("lp_burned_percent","burnt_rate"):
-        raw=find_value(name)
-        if raw is None: continue
-        val=num(raw,default=None)
-        if val is not None and val>=0:
-            burned=val*100 if name.endswith("_rate") and val<=1 else val if not name.endswith("_rate") and val<=100 else None
-        break
-    if burned is None: return False,"LP queimado: não verificável"
-    if burned<=0: return False,"LP não queimado"
+    # Only checks demonstrated by GMGN: unknown wash-trading is not safe.
+    wash=None
+    for source in sources:
+        raw=source.get("is_wash_trading")
+        if isinstance(raw,bool):
+            wash=raw;break
+        if raw in (0,1,"0","1","true","false","True","False"):
+            wash=str(raw).lower() in ("1","true");break
+    if wash is None: return False,"wash trading: não verificável"
+    if wash: return False,"wash trading detectado"
     return True,"ok"
 
 
@@ -1756,6 +1733,16 @@ def run_radar(category, chain="sol"):
                 continue
 
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
+                continue
+            age=age_hours(pair)
+            if age is None or not (5/60 <= age <= 2):
+                rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
+                continue
+            tx=(pair.get("txns") or {}).get("h1") or {}
+            buys=num(tx.get("buys"),default=None)
+            sells=num(tx.get("sells"),default=None)
+            if buys is None or sells is None or buys<=sells:
+                rejections["compras não superam vendas"]=rejections.get("compras não superam vendas",0)+1
                 continue
             passed, audit_reason = migrated_wallet_limits(pair)
             if not passed:
