@@ -1,5 +1,7 @@
 """Public read-only dashboard; automated PAPER trading only. No wallet or order endpoints."""
 import json
+import hmac
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 import logging
 import os
 import threading
@@ -8,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.integrations.gmgn import fetch_rank
@@ -19,6 +21,15 @@ app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_
 BASE = Path(__file__).resolve().parent
 app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 LOCK = threading.RLock()
+AUTH_PASSWORD = os.getenv('TRADER_PASSWORD', '')
+AUTH_SECRET = os.getenv('SESSION_SECRET', '')
+SIGNER = URLSafeTimedSerializer(AUTH_SECRET, salt='gmgn-auth') if AUTH_SECRET else None
+
+def authorized(request):
+    try:
+        return bool(SIGNER and SIGNER.loads(request.cookies.get('gmgn_session',''),max_age=604800)=='ok')
+    except (BadSignature,SignatureExpired):
+        return False
 ACCOUNT = PaperAccount()
 INITIAL_CAPITAL = 100.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
@@ -134,6 +145,10 @@ def startup():
 
 @app.middleware("http")
 async def headers(request, call_next):
+    if request.url.path not in ('/login','/health') and not request.url.path.startswith('/assets/') and not authorized(request):
+        if request.url.path.startswith('/api/'):
+            return JSONResponse({'error':'Login necessário'},status_code=401)
+        return RedirectResponse('/login',status_code=303)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -146,10 +161,43 @@ async def headers(request, call_next):
 def health():
     return {"status": "online", "mode": "paper", "real_trading": False}
 
-@app.get("/login")
-def login_removed():
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse("/", status_code=303)
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if authorized(request):
+        return RedirectResponse("/",status_code=303)
+    return (BASE / "login.html").read_text(encoding="utf-8")
+
+ATTEMPTS = {}
+@app.post("/login")
+async def login(request: Request):
+    ip=request.client.host if request.client else "unknown"
+    now=time.monotonic()
+    with LOCK:
+        count,first=ATTEMPTS.get(ip,(0,now))
+        if now-first>900: count,first=0,now
+        if count>=10:
+            return JSONResponse({"error":"Aguarde 15 minutos"},status_code=429)
+        ATTEMPTS[ip]=(count+1,first)
+    if not AUTH_PASSWORD or not SIGNER:
+        return JSONResponse({"error":"Login não configurado"},status_code=503)
+    try:
+        data=await request.json()
+        password=str(data.get("password",""))[:200]
+    except (ValueError,TypeError,AttributeError):
+        return JSONResponse({"error":"Dados inválidos"},status_code=400)
+    if not hmac.compare_digest(password,AUTH_PASSWORD):
+        return JSONResponse({"error":"Senha incorreta"},status_code=401)
+    with LOCK:
+        ATTEMPTS.pop(ip,None)
+    response=JSONResponse({"ok":True})
+    response.set_cookie("gmgn_session",SIGNER.dumps("ok"),httponly=True,secure=True,samesite="lax",max_age=604800,path="/")
+    return response
+
+@app.post("/logout")
+def logout():
+    response=RedirectResponse("/login",status_code=303)
+    response.delete_cookie("gmgn_session",path="/")
+    return response
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -186,7 +234,7 @@ def status():
 
 @app.post("/api/paper/reset")
 async def reset_paper(request: Request):
-    """Explicit reset only. Public endpoint because user chose a passwordless dashboard."""
+    """Authenticated paper portfolio reset."""
     global INITIAL_CAPITAL
     origin = request.headers.get("origin", "")
     host = request.headers.get("host", "")
