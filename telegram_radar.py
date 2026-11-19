@@ -169,6 +169,8 @@ def retry_delay(headers):
     return min(900.0, max(1.0, delay))
 
 
+from gmgn_shared_limit import request_slot, note_rate_limit
+
 def gmgn_request(path, method="GET", params=None, payload=None):
     """Serializa consultas da Agent API para compartilhar um único limitador."""
     with gmgn_request_lock:
@@ -216,8 +218,9 @@ def _gmgn_request_serialized(path, method="GET", params=None, payload=None):
     )
 
     try:
-        with urlopen(req, timeout=25) as response:
-            result = json.loads(response.read().decode("utf-8"))
+        with request_slot():
+            with urlopen(req, timeout=25) as response:
+                result = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", "replace")
         retry_at = None
@@ -227,7 +230,7 @@ def _gmgn_request_serialized(path, method="GET", params=None, payload=None):
         except (ValueError, AttributeError):
             pass
         if exc.code == 429:
-            retry_after = retry_delay(exc.headers)
+            retry_after = max(retry_delay(exc.headers), note_rate_limit(exc.headers))
             if retry_at and retry_at > time.time():
                 retry_after = max(retry_after, retry_at - time.time())
             retry_after = min(900, retry_after)
