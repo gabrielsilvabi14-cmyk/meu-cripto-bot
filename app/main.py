@@ -299,7 +299,10 @@ def status():
             if p["mark_price"] and p["entry_price"]:
                 p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
                 p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
-            p["stop_price"] = p["entry_price"] * (1 - p["stop_pct"] / 100)
+            paper_pos = ACCOUNT.positions[p["token"]]
+            p["stop_pct"] = paper_pos.stop_pct
+            p["target_pct"] = paper_pos.target_pct
+            p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
