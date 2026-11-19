@@ -94,36 +94,62 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
 
 
 def fetch_token_price(chain: str, address: str) -> float | None:
-    """Refresh an open paper position even when it is absent from ranking."""
-    if chain not in ("sol","eth") or not address:
+    """Live price for paper exits: GMGN first, public Solana pair quote if GMGN fails."""
+    import logging
+    if chain != "sol" or not address:
         return None
-    key=os.environ.get("GMGN_API_KEY","").strip()
-    if not key:
-        return None
-    query=urlencode({"chain":chain,"address":address})
-    req=Request(f"{HOST}/v1/token/info?{query}",headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
+    key = os.environ.get("GMGN_API_KEY", "").strip()
+    if key:
+        query = urlencode({"chain": chain, "address": address})
+        req = Request(f"{HOST}/v1/token/info?{query}",
+                      headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1",
+                               "Accept": "application/json"})
+        try:
+            with request_slot():
+                with urlopen(req, timeout=12) as resp:
+                    result = json.load(resp)
+            if str(result.get("code", "0")) == "0":
+                data = result.get("data", result)
+                for node in (data, data.get("token") if isinstance(data, dict) else None,
+                             data.get("token_info") if isinstance(data, dict) else None,
+                             data.get("info") if isinstance(data, dict) else None):
+                    if isinstance(node, dict):
+                        for field in ("price", "price_usd", "priceUsd"):
+                            try:
+                                value = float(node.get(field))
+                                if 0 < value < 1e12:
+                                    return value
+                            except (TypeError, ValueError):
+                                pass
+        except HTTPError as exc:
+            if exc.code == 429:
+                note_rate_limit(exc.headers)
+            logging.warning("GMGN position quote HTTP %s for sol:%s; trying public fallback", exc.code, address[:8])
+        except (URLError, TimeoutError, ValueError, TypeError) as exc:
+            logging.warning("GMGN position quote %s for sol:%s; trying public fallback", type(exc).__name__, address[:8])
+    # Price-only fallback. Never substitute market cap or use quotes from another token.
     try:
-        with request_slot():
-            with urlopen(req,timeout=15) as resp:
-                result=json.load(resp)
-        if str(result.get("code","0"))!="0":
-            return None
-        data=result.get("data",result)
-        for node in (data,data.get("token") if isinstance(data,dict) else None,data.get("token_info") if isinstance(data,dict) else None,data.get("info") if isinstance(data,dict) else None):
-            if isinstance(node,dict):
-                for field in ("price","price_usd","priceUsd"):
-                    try:
-                        value=float(node.get(field))
-                        if 0<value<1e12:
-                            return value
-                    except (TypeError,ValueError):
-                        pass
-    except (HTTPError,URLError,TimeoutError,ValueError,TypeError) as exc:
-        import logging
-        if isinstance(exc, HTTPError) and exc.code == 429:
-            note_rate_limit(exc.headers)
-        logging.warning("Position price unavailable for %s:%s (%s)",chain,address[:8],type(exc).__name__)
+        req = Request("https://api.dexscreener.com/latest/dex/tokens/" + address,
+                      headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=12) as resp:
+            result = json.load(resp)
+        pairs = [p for p in (result.get("pairs") or [])
+                 if p.get("chainId") == "solana"
+                 and str((p.get("baseToken") or {}).get("address", "")).lower() == address.lower()]
+        pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
+        for pair in pairs:
+            try:
+                price = float(pair.get("priceUsd"))
+                if 0 < price < 1e12:
+                    return price
+            except (ValueError, TypeError):
+                continue
+    except HTTPError as exc:
+        logging.warning("Public price fallback HTTP %s for sol:%s", exc.code, address[:8])
+    except (URLError, TimeoutError, ValueError, TypeError) as exc:
+        logging.warning("Public price fallback %s for sol:%s", type(exc).__name__, address[:8])
     return None
+
 
 def fetch_token_market_cap(chain: str, address: str) -> float | None:
     """Get reported market cap, never substitute FDV for circulating market cap."""
