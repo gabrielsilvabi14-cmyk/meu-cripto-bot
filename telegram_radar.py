@@ -1813,20 +1813,33 @@ def run_radar(category, chain="sol"):
             msg = f"⭐ <b>Oportunidade: {score}/100</b> (experimental)\n" + msg
             if not telegram_send(msg):
                 break
+            # The Telegram message was accepted. Persist its paper signal before
+            # registering the alert, and report any delivery failure explicitly.
+            record = {"chain":chain,"address":mint,"category":category,"score":score,
+                      "pumpfun_confirmed":chain=="sol" and pumpfun_origin(pair.get("gmgn") or {}),
+                      "price":num(pair.get("priceUsd")),
+                      "market_cap":num(pair.get("marketCap")),
+                      "liquidity":num((pair.get("liquidity") or {}).get("usd")),
+                      "symbol":(pair.get("baseToken") or {}).get("symbol"),
+                      "name":(pair.get("baseToken") or {}).get("name"),
+                      "timestamp":time.time()}
+            signal_path = os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl")
+            signal_written = False
+            for attempt in range(3):
+                try:
+                    with open(signal_path,"a",encoding="utf-8") as journal:
+                        journal.write(json.dumps(record,ensure_ascii=False)+"\n")
+                        journal.flush()
+                        os.fsync(journal.fileno())
+                    signal_written = True
+                    log.info("PAPER SIGNAL WRITTEN %s:%s score=%s path=%s",chain,mint,score,signal_path)
+                    break
+                except Exception:
+                    log.exception("PAPER SIGNAL DELIVERY FAILED attempt=%d token=%s:%s",attempt+1,chain,mint)
+                    time.sleep(0.5)
+            if not signal_written:
+                log.error("TELEGRAM ALERT WITHOUT PAPER SIGNAL %s:%s",chain,mint)
             register_alert(f"{chain}:{mint}", pair, category)
-            try:
-                record = {"chain":chain,"address":mint,"category":category,"score":score,
-                          "pumpfun_confirmed":chain=="sol" and pumpfun_origin(pair.get("gmgn") or {}),
-                          "price":num(pair.get("priceUsd")),
-                          "market_cap":num(pair.get("marketCap")) or num(pair.get("fdv")),
-                          "liquidity":num((pair.get("liquidity") or {}).get("usd")),
-                          "symbol":(pair.get("baseToken") or {}).get("symbol"),
-                          "name":(pair.get("baseToken") or {}).get("name"),
-                          "timestamp":time.time()}
-                with open(os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl"),"a",encoding="utf-8") as journal:
-                    journal.write(json.dumps(record,ensure_ascii=False)+chr(10))
-            except OSError as exc:
-                log.warning("Diário de sinais: %s",exc)
             try:
                 intelligence.mark_sent(chain, mint)
                 intelligence.start_cohort(mint, strategy, f)
