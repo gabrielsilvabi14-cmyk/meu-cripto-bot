@@ -30,7 +30,7 @@ function renderPosition(container,p,meta){
  const card=node('div','','position');
  card.append(node('strong',(p.symbol||t.symbol||p.name||'Token')+' · '+chain.toUpperCase()));
  contractLink(card,chain,address);
- const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',mc(p.current_market_cap)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-(p.stop_pct??12)/100))+' (estimado)':'—'],['Stop-loss',pct(-(p.stop_pct??12))],['Meta de lucro',pct(p.target_pct??50)],['Cotação',p.mark_is_stale?'⚠️ Desatualizada':'Atualizada']];
+ const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',p.mark_is_stale?'Indisponível (sem cotação recente)':mc(p.current_market_cap)],['Variação do preço',p.mark_is_stale?'—':pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-(p.stop_pct??12)/100))+' (estimado)':'—'],['Stop-loss',pct(-(p.stop_pct??12))],['Meta de lucro',pct(p.target_pct??50)],['Cotação',p.mark_is_stale?'⚠️ Sem cotação recente · stop não avaliado':'Atualizada'],['Último preço válido',p.last_mark_at?new Date(p.last_mark_at).toLocaleString('pt-BR'):'Ainda não disponível']];
  const grid=node('div','','position-grid');
  for(const [k,v] of fields){const item=document.createElement('div');item.append(node('small',k),node('b',v, k==='Resultado estimado'&&typeof p.unrealized_pnl_usd==='number'?(p.unrealized_pnl_usd>=0?'positive':'negative'):''));grid.append(item)}
  card.append(grid);openButton(card,chain,address);container.append(card);
@@ -94,7 +94,7 @@ async function refresh(){
   if(!tokens.length)list.textContent='Nenhum token recebido da GMGN.';
  }catch(e){setValue('connection','Falha ao consultar o painel');setValue('errors','Não foi possível atualizar os dados. Tente recarregar a página.')}
 }
-refresh();setInterval(refresh,30000);
+refresh();setInterval(refresh,60000);
 
 $('capital-form').addEventListener('submit',async e=>{
  e.preventDefault();
