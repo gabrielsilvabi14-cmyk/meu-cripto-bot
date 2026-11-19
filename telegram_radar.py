@@ -1682,22 +1682,28 @@ def gmgn_accumulation_setup(pair, candles, resolution, features, strategy):
     }, "segunda perna após reacumulação" if second_leg else "base local despertando"
 
 
-def migration_timestamp(pair):
-    """Horário explícito de conclusão da migração. Nunca usar idade de criação."""
-    data = pair.get("gmgn") or {}
-    for node in (data, data.get("pool"), data.get("launchpad")):
-        if not isinstance(node, dict):
-            continue
-        for key in ("migration_timestamp", "migrated_at", "migrated_timestamp",
-                    "graduation_timestamp", "graduated_at", "completed_timestamp",
-                    "completed_at", "complete_timestamp"):
-            raw = num(node.get(key), default=None)
-            if raw is None or raw <= 0:
-                continue
-            ts = raw / 1000 if raw > 1e11 else raw
-            if 1577836800 <= ts <= time.time():
-                return ts
-    return None
+def migration_evidence(pair):
+    """Migration evidence, with separately labelled completed-pool proxy."""
+    data = pair.get('gmgn') or {}
+    now = time.time()
+    def normalize(value):
+        raw = num(value, default=None)
+        if raw is None or raw <= 0: return None
+        ts = raw / 1000 if raw > 1e11 else raw
+        return ts if 1577836800 <= ts <= now + 15 else None
+    nodes = [('gmgn', data)]
+    nodes.extend((name, data.get(name)) for name in ('pool','launchpad','token','token_info'))
+    for name, node in nodes:
+        if not isinstance(node, dict): continue
+        for field in ('migration_timestamp','migrated_at','migrated_timestamp','graduation_timestamp','graduated_at','completed_timestamp','completed_at','complete_timestamp'):
+            ts = normalize(node.get(field))
+            if ts is not None: return ts, 'migration_explicit', name+'.'+field
+    pool = data.get('pool')
+    if data.get('radar_completed_source') is True and isinstance(pool, dict):
+        if pool.get('pool_address') and pool.get('exchange'):
+            ts = normalize(pool.get('creation_timestamp'))
+            if ts is not None: return ts, 'completed_pool_created_proxy', 'pool.creation_timestamp'
+    return None, 'unknown', None
 
 
 def migrated_wallet_limits(pair):
@@ -1844,6 +1850,8 @@ def run_radar(category, chain="sol"):
                 break
             # The Telegram message was accepted. Persist its paper signal before
             # registering the alert, and report any delivery failure explicitly.
+            migrated_at, migration_source, migration_field = migration_evidence(pair)
+            log.info("PAPER MIGRATION EVIDENCE %s:%s source=%s field=%s age_seconds=%s", chain, mint[:8], migration_source, migration_field, round(time.time()-migrated_at,1) if migrated_at is not None else "unknown")
             record = {"chain":chain,"address":mint,"category":category,"score":score,
                       "pumpfun_confirmed":chain=="sol" and pumpfun_origin(pair.get("gmgn") or {}),
                       "price":num(pair.get("priceUsd")),
@@ -1851,7 +1859,9 @@ def run_radar(category, chain="sol"):
                       "liquidity":num((pair.get("liquidity") or {}).get("usd")),
                       "symbol":(pair.get("baseToken") or {}).get("symbol"),
                       "name":(pair.get("baseToken") or {}).get("name"),
-                      "migration_timestamp":migration_timestamp(pair),
+                      "migration_timestamp":migrated_at,
+                      "migration_source":migration_source,
+                      "migration_field":migration_field,
                       "timestamp":time.time()}
             signal_path = os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl")
             signal_written = False
