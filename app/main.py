@@ -242,6 +242,10 @@ def signal_worker():
                             reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
                         elif not price:
                             reason="preço inválido"
+                        elif not isinstance(signal.get("migration_timestamp"), (int, float)) or isinstance(signal.get("migration_timestamp"), bool):
+                            reason="horário de migração não verificável; compra bloqueada"
+                        elif not (0 <= time.time()-float(signal["migration_timestamp"]) <= 360):
+                            reason="migração há mais de 6 minutos (ou horário inválido); compra bloqueada"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
