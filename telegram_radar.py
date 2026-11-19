@@ -1706,6 +1706,45 @@ def migration_evidence(pair):
     return None, 'unknown', None
 
 
+def paper_lp_protection(pair):
+    """Require explicit LP burn or verifiable active LP lock, not token burn."""
+    data = pair.get('gmgn') or {}
+    nodes = [data] + [data[k] for k in ('security','pool','risk') if isinstance(data.get(k),dict)]
+    def pct(value, fraction=False):
+        raw = num(value, default=None)
+        if raw is None or raw < 0: return None
+        if fraction: return raw*100 if raw <= 1 else None
+        return raw if raw <= 100 else None
+    for node in nodes:
+        for field in ('lp_burned_percent','lp_burned_rate','lp_burn_rate'):
+            value = pct(node.get(field), field.endswith(('_rate',)))
+            if value is not None:
+                if value >= 95: return 'confirmed', 'LP queimada >=95% ('+field+')'
+                return 'unprotected', 'LP queimada abaixo de 95% ('+field+')'
+        for field in ('is_lp_burned','lp_burned'):
+            raw = node.get(field)
+            if raw is True or str(raw).lower() in ('true','1'):
+                return 'confirmed', 'LP queimada indicada ('+field+')'
+            if raw is False or str(raw).lower() in ('false','0'):
+                return 'unprotected', 'LP não queimada ('+field+')'
+    # Lock only if its structure explicitly provides LP lock evidence and active expiry.
+    now = time.time()
+    for node in nodes:
+        for field in ('lockInfo','lock_summary'):
+            lock = node.get(field)
+            locks = lock if isinstance(lock,list) else [lock]
+            for entry in locks:
+                if not isinstance(entry,dict): continue
+                raw_pct = entry.get('locked_percent')
+                if raw_pct is None: raw_pct = entry.get('lock_percent')
+                if raw_pct is None: raw_pct = entry.get('locked_ratio')
+                percent = pct(raw_pct, 'locked_ratio' in entry and entry.get('locked_percent') is None and entry.get('lock_percent') is None)
+                expires = num(entry.get('unlock_timestamp') or entry.get('unlock_time') or entry.get('expire_timestamp') or entry.get('end_timestamp'),default=None)
+                if expires is not None and expires > 1e11: expires /= 1000
+                if percent is not None and percent >= 95 and expires is not None and expires > now:
+                    return 'confirmed', 'LP bloqueada >=95% até timestamp '+str(int(expires))
+    return 'unknown', 'LP queimada/bloqueada não comprovada pela GMGN'
+
 def migrated_wallet_limits(pair):
     data=pair.get("gmgn") or {}
     sources=[data]+[data[k] for k in ("stat","security","token_security","risk","dev") if isinstance(data.get(k),dict)]
@@ -1850,6 +1889,8 @@ def run_radar(category, chain="sol"):
                 break
             # The Telegram message was accepted. Persist its paper signal before
             # registering the alert, and report any delivery failure explicitly.
+            lp_status, lp_reason = paper_lp_protection(pair)
+            log.info("PAPER LP AUDIT %s:%s status=%s reason=%s", chain, mint[:8], lp_status, lp_reason)
             migrated_at, migration_source, migration_field = migration_evidence(pair)
             log.info("PAPER MIGRATION EVIDENCE %s:%s source=%s field=%s age_seconds=%s", chain, mint[:8], migration_source, migration_field, round(time.time()-migrated_at,1) if migrated_at is not None else "unknown")
             record = {"chain":chain,"address":mint,"category":category,"score":score,
@@ -1862,6 +1903,8 @@ def run_radar(category, chain="sol"):
                       "migration_timestamp":migrated_at,
                       "migration_source":migration_source,
                       "migration_field":migration_field,
+                      "lp_protection_status":lp_status,
+                      "lp_protection_reason":lp_reason,
                       "timestamp":time.time()}
             signal_path = os.getenv("RADAR_SIGNAL_FILE","/tmp/gmgn_radar_signals.jsonl")
             signal_written = False
