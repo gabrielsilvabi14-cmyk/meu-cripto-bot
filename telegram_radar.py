@@ -34,7 +34,7 @@ GMGN_API_HOST = "https://openapi.gmgn.ai"
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 
-INTERVALO = max(300, int(os.getenv("RADAR_INTERVAL", "300")))
+INTERVALO = max(60, int(os.getenv("RADAR_INTERVAL", "60")))
 INTERVALO_RADARES = 15
 INTERVALO_ACOMPANHAMENTO = 15
 FUSO_BRASILIA = ZoneInfo("America/Sao_Paulo")
@@ -45,7 +45,7 @@ JANELA_SAIDA_NEW = 30 * 60
 JANELAS_PROMOVIDOS = tuple(range(3 * 3600, 24 * 3600 + 1, 3 * 3600))
 TOLERANCIA_SAIDA_NEW = 2 * 60
 TOLERANCIA_PROMOVIDOS = 5 * 60
-MAX_CANDIDATOS = 50
+MAX_CANDIDATOS = 30
 MAX_ALERTAS = 3
 
 LIQ_MIN = 20000
@@ -448,7 +448,7 @@ def discover(category, chain="sol"):
         section = {
             "filters": ["offchain", "onchain"],
             "launchpad_platform_v2": True,
-            "limit": 80,
+            "limit": 60,
         }
         # SOL fica restrita à Pump.fun na própria consulta e é validada
         # novamente pelos metadados do token. ETH consulta as plataformas da rede.
