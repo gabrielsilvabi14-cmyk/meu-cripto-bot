@@ -165,6 +165,13 @@ def status():
             positions.append({"token": key, "network": p.network, "quantity": p.quantity,
                               "entry_price": p.entry_price, "mark_price": mark,
                               "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd})
+        token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
+        for p in positions:
+            p.update(token_meta.get(p["token"], {}))
+            if p["mark_price"] and p["entry_price"]:
+                p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
+                p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
+            p["stop_price"] = p["entry_price"] * (1 - ACCOUNT.config.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"],
                 "planned_risk_pct": 2, "initial_paper_capital_usd": 100,
