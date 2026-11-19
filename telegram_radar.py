@@ -399,49 +399,26 @@ def gmgn_to_pair(row, category, info=None, chain="sol"):
     }
 
 
-def excluded_solana_pool(pair):
-    """Exclude Meteora and Dynamic launchpads/pools using explicit GMGN metadata."""
-    data = pair.get("gmgn") or {}
+def pumpfun_origin(data):
+    """Confirm Pump.fun origin using launchpad metadata, not the trading DEX."""
     if not isinstance(data, dict):
-        return None
+        return False
     nodes = [data]
-    for key in ("pool", "launchpad", "platform", "token", "token_info"):
+    for key in ("launchpad", "platform", "token", "token_info"):
         if isinstance(data.get(key), dict):
             nodes.append(data[key])
     fields = ("launchpad", "launchpad_name", "launchpad_platform",
               "launch_platform", "platform", "platform_name",
-              "creation_platform", "source_platform", "exchange",
-              "dex", "dex_name", "amm", "amm_name", "pool_type",
-              "protocol", "protocol_name")
+              "creation_platform", "source_platform")
     for node in nodes:
         for key in fields:
             value = node.get(key)
             if isinstance(value, dict):
                 value = value.get("name") or value.get("platform") or value.get("id")
-            if not isinstance(value, str):
-                continue
-            normalized = "".join(ch for ch in value.lower() if ch.isalnum())
-            if "meteora" in normalized:
-                return "Meteora"
-            if "dynamic" in normalized or normalized in ("dlmm", "damm", "dammv2"):
-                return "Dynamic"
-    return None
-
-
-def pumpfun_origin(data):
-    """Exige metadados explícitos de origem; endereço terminando em pump não basta."""
-    nodes = [data]
-    for k in ("launchpad", "platform", "pool", "token", "token_info"):
-        if isinstance(data.get(k), dict):
-            nodes.append(data[k])
-    for node in nodes:
-        for k in ("launchpad", "launchpad_name", "launchpad_platform", "launch_platform",
-                  "platform", "platform_name", "creation_platform", "source_platform"):
-            v = node.get(k)
-            if isinstance(v, dict):
-                v = v.get("name") or v.get("platform")
-            if isinstance(v, str) and v.lower().replace(".", "").replace("_", "").replace("-", "").replace(" ", "") in ("pumpfun", "pump"):
-                return True
+            if isinstance(value, str):
+                normalized = "".join(ch for ch in value.lower() if ch.isalnum())
+                if normalized in ("pumpfun", "pump"):
+                    return True
     return False
 
 
@@ -1886,9 +1863,8 @@ def run_radar(category, chain="sol"):
 
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
-            excluded = excluded_solana_pool(pair) if chain == "sol" else None
-            if excluded:
-                reason = "plataforma excluída: " + excluded
+            if chain == "sol" and not pumpfun_origin(pair.get("gmgn") or {}):
+                reason = "origem Pump.fun não confirmada"
                 rejections[reason] = rejections.get(reason, 0) + 1
                 continue
             age=age_hours(pair)
@@ -1956,9 +1932,8 @@ def run_radar(category, chain="sol"):
             if was_sent(f"{chain}:{mint}") or was_sent(mint) or intelligence.recently_sent(chain, mint):
                 continue
             gmgn_audit_enrich(pair)
-            excluded = excluded_solana_pool(pair) if chain == "sol" else None
-            if excluded:
-                log.info("RADAR SKIP sol:%s plataforma excluída após auditoria: %s", mint[:8], excluded)
+            if chain == "sol" and not pumpfun_origin(pair.get("gmgn") or {}):
+                log.info("RADAR SKIP sol:%s origem Pump.fun não confirmada após auditoria", mint[:8])
                 continue
             try:
                 pair["whale_holders"] = gmgn_request(
