@@ -466,7 +466,10 @@ def discover(category, chain="sol"):
             "launchpad_platform_v2": True,
             "limit": 80,
         }
-        # GMGN completed feed; filter origin locally, including verified Pump.fun mint provenance.
+        # Restore the original GMGN server-side Pump.fun launchpad filter.
+        # DEX/pool metadata is not used as the launch platform.
+        if chain == "sol":
+            section["launchpad_platform"] = ["Pump.fun"]
         payload = {
             "version": "v2",
             **{token_type: dict(section) for token_type in types},
