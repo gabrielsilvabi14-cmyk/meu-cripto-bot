@@ -14,6 +14,8 @@ class Position:
     opened_at: str
     partial_taken: bool = False
     entry_market_cap: float | None = None
+    stop_pct: float = 12.0
+    target_pct: float = 50.0
 
 @dataclass
 class PaperAccount:
@@ -75,11 +77,11 @@ class PaperAccount:
         pos = self.positions[token]
         self._valid(price)
         change_pct = (price / pos.entry_price - 1) * 100
-        if change_pct <= -self.config.stop_pct:
+        if change_pct <= -pos.stop_pct:
             return self.sell(token, price)
-        if change_pct >= 50 and pos.partial_taken:
+        if change_pct >= pos.target_pct:
             return self.sell(token, price)
-        if change_pct >= 25 and not pos.partial_taken:
+        if change_pct >= pos.target_pct / 2 and not pos.partial_taken:
             pos.partial_taken = True
             return self.sell(token, price, 0.5)
         return None
