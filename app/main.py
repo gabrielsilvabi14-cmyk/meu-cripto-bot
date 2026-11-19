@@ -22,7 +22,7 @@ BASE = Path(__file__).resolve().parent
 app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
-PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":12.0,"target_pct":50.0}
+PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":30.0}
 INITIAL_CAPITAL = 100.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
@@ -56,6 +56,11 @@ def restore():
                 PAPER_SETTINGS[name] = float(d["paper_settings"][name])
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
+        # Migrar posições antigas sem recriar máximas que não foram registradas.
+        for pos in ACCOUNT.positions.values():
+            pos.stop_pct = 30.0
+            pos.highest_price = max(pos.entry_price, pos.highest_price or 0,
+                                    pos.last_mark_price or 0)
         ACCOUNT.events = d["events"][-200:]
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -164,7 +169,7 @@ def monitor_exits():
                     if price is None:
                         with LOCK:
                             PRICE_FAILURES[key] = PRICE_FAILURES.get(key, 0) + 1
-                        logging.warning("PAPER MARK unavailable %s failures=%s; stop/target not evaluated",key, PRICE_FAILURES[key])
+                        logging.warning("PAPER MARK unavailable %s failures=%s; trailing stop not evaluated",key, PRICE_FAILURES[key])
                         continue
                     with LOCK:
                         LAST_PRICES[key]=price
@@ -176,6 +181,8 @@ def monitor_exits():
                                 logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s",
                                              key,event.get("exit_reason"),event.get("realized_pnl_usd"),event.get("realized_pnl_pct"))
                                 save()
+                            else:
+                                save()  # Persistir novo pico mesmo sem venda.
                 except Exception:
                     logging.exception("PAPER EXIT monitor error for %s",key)
                 time.sleep(1)
@@ -201,7 +208,7 @@ def buy_every_alert(key,chain,price,market_cap=None):
         ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
-    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"])
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],highest_price=execution_price)
     event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
     ACCOUNT.events.append(event)
     return event
@@ -330,8 +337,8 @@ def status():
                 p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
             paper_pos = ACCOUNT.positions[p["token"]]
             p["stop_pct"] = paper_pos.stop_pct
-            p["target_pct"] = paper_pos.target_pct
-            p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
+            p["highest_price"] = paper_pos.highest_price or paper_pos.entry_price
+            p["stop_price"] = p["highest_price"] * (1 - paper_pos.stop_pct / 100)
         if any(p["mark_is_stale"] for p in positions):
             equity = None
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
@@ -346,7 +353,7 @@ def status():
 
 @app.post("/api/paper/settings")
 async def update_paper_settings(request: Request):
-    """Update PAPER settings only; existing positions retain entry-time limits."""
+    """Update PAPER settings for future positions."""
     origin=request.headers.get("origin","")
     host=request.headers.get("host","")
     if not origin or origin not in ("https://"+host,"http://"+host):
@@ -361,10 +368,10 @@ async def update_paper_settings(request: Request):
         settings={key:float(data[key]) for key in PAPER_SETTINGS}
         if not all(isfinite(v) for v in settings.values()):
             raise ValueError()
-        if not (1<=settings["operation_usd"]<=10000 and 0.1<=settings["stop_pct"]<=95 and 1<=settings["target_pct"]<=1000):
+        if not (1<=settings["operation_usd"]<=10000 and 0.1<=settings["stop_pct"]<=95):
             raise ValueError()
     except (ValueError,TypeError,KeyError,AttributeError):
-        return JSONResponse({"error":"Use valor US$ 1–10.000, stop 0,1–95% e meta 1–1.000%"},status_code=400)
+        return JSONResponse({"error":"Use valor US$ 1–10.000 e trailing stop 0,1–95%"},status_code=400)
     with LOCK:
         PAPER_SETTINGS.update(settings)
         save()
