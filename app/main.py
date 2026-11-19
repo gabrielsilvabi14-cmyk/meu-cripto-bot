@@ -254,6 +254,10 @@ async def headers(request, call_next):
     response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
     return response
 
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
 @app.get("/health")
 def health():
     return {"status": "online", "mode": "paper", "real_trading": False}
