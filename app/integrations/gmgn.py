@@ -1,5 +1,6 @@
 """Read-only GMGN Agent API integration, adapted from the existing Radar."""
 import json
+import logging
 import os
 import time
 import uuid
@@ -10,6 +11,8 @@ from urllib.request import Request, urlopen
 from gmgn_shared_limit import request_slot, note_rate_limit
 
 HOST = "https://openapi.gmgn.ai"
+# Avoid repeatedly hitting a private endpoint after authorization is rejected.
+_PRICE_AUTH_RETRY_AT = 0.0
 
 def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     if chain not in ("sol", "eth") or interval not in ("5m", "1h"):
@@ -95,11 +98,11 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
 
 def fetch_token_price(chain: str, address: str) -> float | None:
     """Live price for paper exits: GMGN first, public Solana pair quote if GMGN fails."""
-    import logging
+    global _PRICE_AUTH_RETRY_AT
     if chain != "sol" or not address:
         return None
     key = os.environ.get("GMGN_API_KEY", "").strip()
-    if key:
+    if key and time.monotonic() >= _PRICE_AUTH_RETRY_AT:
         query = urlencode({"chain": chain, "address": address})
         req = Request(f"{HOST}/v1/token/info?{query}",
                       headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1",
@@ -124,6 +127,9 @@ def fetch_token_price(chain: str, address: str) -> float | None:
         except HTTPError as exc:
             if exc.code == 429:
                 note_rate_limit(exc.headers)
+            if exc.code in (401, 403):
+                _PRICE_AUTH_RETRY_AT = time.monotonic() + 900
+                logging.warning("GMGN token/info authorization rejected; pausing this endpoint for 15 minutes (check API permissions)")
             logging.warning("GMGN position quote HTTP %s for sol:%s; trying public fallback", exc.code, address[:8])
         except (URLError, TimeoutError, ValueError, TypeError) as exc:
             logging.warning("GMGN position quote %s for sol:%s; trying public fallback", type(exc).__name__, address[:8])
@@ -141,6 +147,7 @@ def fetch_token_price(chain: str, address: str) -> float | None:
             try:
                 price = float(pair.get("priceUsd"))
                 if 0 < price < 1e12:
+                    logging.info("PAPER PRICE source=dexscreener sol:%s pair=%s", address[:8], str(pair.get("pairAddress", ""))[:16])
                     return price
             except (ValueError, TypeError):
                 continue
