@@ -2292,7 +2292,7 @@ def main():
         "🔁 Deduplicação: 12 horas"
     )
     next_new = time.monotonic()
-    next_promoted = next_new + INTERVALO_RADARES
+    next_promoted = next_new + 900
     while True:
         now = time.monotonic()
         if now >= next_new:
@@ -2307,7 +2307,7 @@ def main():
         if time.monotonic() >= next_promoted:
             run_radar("trending", "sol")
             run_radar("trending", "eth")
-            next_promoted = time.monotonic() + INTERVALO
+            next_promoted = time.monotonic() + max(900, INTERVALO)
         time.sleep(max(1, min(next_new, next_promoted) - time.monotonic()))
 
 
