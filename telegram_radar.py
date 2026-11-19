@@ -1775,6 +1775,10 @@ def run_radar(category, chain="sol"):
             signal_bonus = 6 if 12 in signal_types else 3 if any(v in signal_types for v in (6, 7)) else 0
             theme_bonus = 0  # Tema não aumenta score sem evidência independente.
             final_score = min(100, score + signal_bonus + theme_bonus)
+            # Strict paper/alert threshold, including high-return pattern overrides.
+            if final_score <= 60:
+                rejections["pontuação de 60 ou menos"] = rejections.get("pontuação de 60 ou menos", 0) + 1
+                continue
             alert_priority = 1 if f.get("pattern_override") else 0
             approved.append((alert_priority, final_score, mint, pair, f))
         approved.sort(key=lambda item: (item[0], item[1]), reverse=True)
