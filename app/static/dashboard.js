@@ -46,6 +46,19 @@ async function refresh(){
  try{
   const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
   const d=await r.json(),m=d.market||{},tokens=m.tokens||[],positions=d.positions||[],trades=d.trades||[];
+  const stats=d.signal_stats||{};
+  setValue('signal-received',stats.received||0);
+  setValue('signal-bought',stats.bought||0);
+  setValue('signal-skipped',stats.skipped||0);
+  setValue('signal-error',stats.last_error?'Erro: '+stats.last_error:(d.telegram_radar_running?'Radar ativo · aguardando próximo sinal':'Radar Telegram não está ativo'));
+  const decisions=$('signal-decisions');decisions.replaceChildren();
+  for(const decision of (d.paper_decisions||[]).slice(-12).reverse()){
+   const line=node('div','','token-row');
+   line.append(node('strong',(decision.result==='comprado'?'🟢 Compra fictícia':'🟠 Não comprado')+' · '+decision.token));
+   line.append(node('small',decision.reason||'Sem motivo informado'));
+   decisions.append(line);
+  }
+  if(!decisions.children.length)decisions.textContent='Nenhum sinal processado nesta execução.';
   setValue('connection',m.connected?'GMGN conectada':(m.phase||'Aguardando'));
   setValue('lastcheck',m.last_check?new Date(m.last_check).toLocaleString('pt-BR'):'Aguardando');
   setValue('cycles',m.cycles||0);
