@@ -1,6 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const usd=v=>typeof v==='number'&&Number.isFinite(v)?'US$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+const mc=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?'US$ '+v.toLocaleString('pt-BR',{maximumFractionDigits:0}):'Indisponível';
 const price=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?'US$ '+v.toPrecision(6):'—';
 const pct=v=>typeof v==='number'&&Number.isFinite(v)?(v>=0?'+':'')+v.toFixed(2)+'%':'—';
 function node(tag,value,cls){const n=document.createElement(tag);n.textContent=String(value??'');if(cls)n.className=cls;return n}
@@ -29,7 +30,7 @@ function renderPosition(container,p,meta){
  const card=node('div','','position');
  card.append(node('strong',(p.symbol||t.symbol||p.name||'Token')+' · '+chain.toUpperCase()));
  contractLink(card,chain,address);
- const fields=[['Preço de entrada',price(p.entry_price)],['Preço atual',price(p.mark_price)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',price(p.stop_price)]];
+ const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',mc(p.current_market_cap)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-0.12))+' (estimado)':'—']];
  const grid=node('div','','position-grid');
  for(const [k,v] of fields){const item=document.createElement('div');item.append(node('small',k),node('b',v, k==='Resultado estimado'&&typeof p.unrealized_pnl_usd==='number'?(p.unrealized_pnl_usd>=0?'positive':'negative'):''));grid.append(item)}
  card.append(grid);openButton(card,chain,address);container.append(card);
