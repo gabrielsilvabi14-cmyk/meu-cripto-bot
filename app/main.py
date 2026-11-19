@@ -151,10 +151,12 @@ def poll():
                         liquidity=valid_price(signal.get("liquidity"))
                         if time.time()-float(signal.get("timestamp",0))>1800:
                             continue
-                        if signal["chain"]!="eth" or not price or not liquidity:
+                        if signal["chain"] not in ("eth","sol") or not price or not liquidity:
+                            continue
+                        if signal["chain"]=="sol" and not signal.get("pumpfun_confirmed"):
                             continue
                         if key not in ACCOUNT.positions and len(ACCOUNT.positions)<ACCOUNT.config.max_open_positions:
-                            ACCOUNT.buy(key,"eth",price,liquidity)
+                            ACCOUNT.buy(key,signal["chain"],price,liquidity)
                             LAST_PRICES[key]=price
                     except (ValueError,KeyError,TypeError):
                         continue
