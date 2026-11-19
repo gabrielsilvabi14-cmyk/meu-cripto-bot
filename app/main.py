@@ -22,7 +22,7 @@ LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
-          "tokens": [], "cycles": 0, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
+          "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
 LAST_PRICES = {}
 
 def valid_price(v):
@@ -73,18 +73,27 @@ def eligible(t):
 
 def poll():
     restore()
+    logging.info("GMGN paper worker started; key configured=%s", bool(os.getenv("GMGN_API_KEY")))
     while True:
-        tokens, errors = [], {}
+        tokens, errors, chain_status = [], {}, {} 
+        with LOCK:
+            MARKET["phase"] = "consultando GMGN"
+            MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
         for chain in ("sol", "eth"):
             try:
-                tokens.extend(fetch_rank(chain, limit=20))
+                found = fetch_rank(chain, limit=20)
+                tokens.extend(found)
+                chain_status[chain] = {"ok": True, "tokens": len(found)}
+                logging.info("GMGN %s returned %s tokens", chain, len(found))
             except Exception as exc:
                 errors[chain] = str(exc)[:160]
+                chain_status[chain] = {"ok": False, "error": errors[chain]}
                 logging.warning("GMGN %s failed: %s", chain, errors[chain])
             time.sleep(6)
         now = datetime.now(timezone.utc).isoformat()
         with LOCK:
             MARKET.update(connected=bool(tokens), last_check=now, errors=errors,
+                          chain_status=chain_status, phase=("monitorando" if tokens else "erro na integração"),
                           tokens=tokens[:40], cycles=MARKET["cycles"] + 1)
             if tokens:
                 MARKET["last_success"] = now
