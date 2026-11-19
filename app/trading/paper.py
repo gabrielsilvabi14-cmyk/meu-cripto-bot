@@ -13,6 +13,7 @@ class Position:
     entry_cost_usd: float
     opened_at: str
     partial_taken: bool = False
+    entry_market_cap: float | None = None
 
 @dataclass
 class PaperAccount:
