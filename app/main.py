@@ -22,6 +22,7 @@ BASE = Path(__file__).resolve().parent
 app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
+PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":12.0,"target_pct":50.0}
 INITIAL_CAPITAL = 100.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
@@ -47,6 +48,9 @@ def restore():
         d = json.loads(STATE_FILE.read_text())
         global INITIAL_CAPITAL
         INITIAL_CAPITAL = float(d.get("initial_capital", 100.0))
+        for name in PAPER_SETTINGS:
+            if name in d.get("paper_settings",{}):
+                PAPER_SETTINGS[name] = float(d["paper_settings"][name])
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
         ACCOUNT.events = d["events"][-200:]
@@ -57,7 +61,7 @@ def save():
     from dataclasses import asdict
     data = {"initial_capital": INITIAL_CAPITAL, "cash": ACCOUNT.cash_usd,
             "positions": {k: asdict(v) for k, v in ACCOUNT.positions.items()},
-            "events": ACCOUNT.events[-200:]}
+            "events": ACCOUNT.events[-200:], "paper_settings":dict(PAPER_SETTINGS)}
     try:
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(data))
@@ -163,7 +167,7 @@ def buy_every_alert(key,chain,price,market_cap=None):
     """Independent $20 paper position for each alerted token; virtual funding is explicit."""
     global INITIAL_CAPITAL
     from app.trading.paper import Position
-    notional=20.0
+    notional=PAPER_SETTINGS["operation_usd"]
     fee=notional*ACCOUNT.fee_pct/100
     required=notional+fee
     if ACCOUNT.cash_usd<required:
@@ -173,7 +177,7 @@ def buy_every_alert(key,chain,price,market_cap=None):
         ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
-    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap)
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"])
     event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
     ACCOUNT.events.append(event)
     return event
@@ -282,15 +286,42 @@ def status():
             if p["mark_price"] and p["entry_price"]:
                 p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
                 p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
-            p["stop_price"] = p["entry_price"] * (1 - ACCOUNT.config.stop_pct / 100)
+            p["stop_price"] = p["entry_price"] * (1 - p["stop_pct"] / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                "planned_risk_pct": 2, "initial_paper_capital_usd": INITIAL_CAPITAL,
+                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
                 "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
+
+
+@app.post("/api/paper/settings")
+async def update_paper_settings(request: Request):
+    """Update PAPER settings only; existing positions retain entry-time limits."""
+    origin=request.headers.get("origin","")
+    host=request.headers.get("host","")
+    if not origin or origin not in ("https://"+host,"http://"+host):
+        return JSONResponse({"error":"Origem não autorizada"},status_code=403)
+    if request.headers.get("content-type","").split(";")[0].strip()!="application/json":
+        return JSONResponse({"error":"JSON obrigatório"},status_code=415)
+    if int(request.headers.get("content-length") or "0")>1024:
+        return JSONResponse({"error":"Dados muito grandes"},status_code=413)
+    try:
+        from math import isfinite
+        data=await request.json()
+        settings={key:float(data[key]) for key in PAPER_SETTINGS}
+        if not all(isfinite(v) for v in settings.values()):
+            raise ValueError()
+        if not (1<=settings["operation_usd"]<=10000 and 0.1<=settings["stop_pct"]<=95 and 1<=settings["target_pct"]<=1000):
+            raise ValueError()
+    except (ValueError,TypeError,KeyError,AttributeError):
+        return JSONResponse({"error":"Use valor US$ 1–10.000, stop 0,1–95% e meta 1–1.000%"},status_code=400)
+    with LOCK:
+        PAPER_SETTINGS.update(settings)
+        save()
+    return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas operações usarão estes parâmetros; posições abertas não são alteradas."}
 
 @app.post("/api/paper/reset")
 async def reset_paper(request: Request):
