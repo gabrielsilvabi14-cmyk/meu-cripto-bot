@@ -1822,7 +1822,7 @@ def migrated_wallet_limits(pair):
                     break
             if value is not None: break
         if value is None: return False,label+": percentual não verificável"
-        if value>=30: return False,label+": limite de 30% atingido"
+        if value>=50: return False,label+": limite de 50% atingido"
     # Only checks demonstrated by GMGN: unknown wash-trading is not safe.
     wash=None
     for source in sources:
