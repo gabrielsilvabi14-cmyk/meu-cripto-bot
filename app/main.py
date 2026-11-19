@@ -63,16 +63,32 @@ def pumpfun_confirmed(token):
     return str(token.get("source") or "").lower() in ("pump.fun", "pumpfun")
 
 def eligible(t):
+    """Conservative Telegram Radar-inspired paper entries; unknown data cannot pass."""
     price = valid_price(t.get("price"))
     liquidity = valid_price(t.get("liquidity"))
     volume = valid_price(t.get("volume_1h"))
-    if not price or not liquidity or not volume:
+    buys = t.get("buys_1h")
+    sells = t.get("sells_1h")
+    change = t.get("change_1h")
+    age = t.get("age_hours")
+    if not all((price, liquidity, volume)):
         return False
-    if liquidity < 10000 or volume < 30000:
+    if t.get("chain") == "sol":
+        # No simulated SOL purchase until Pump.fun origin is verified.
         return False
-    if t["chain"] == "sol" and not pumpfun_confirmed(t):
+    if t.get("chain") != "eth":
         return False
-    return t["chain"] == "eth"
+    if liquidity < 20000 or volume < 30000 or volume / liquidity > 20:
+        return False
+    if buys is None or sells is None or change is None or age is None:
+        return False
+    if buys < 30 or sells < 10 or buys < sells * 1.15:
+        return False
+    if age < 10 / 60 or age > 24:
+        return False
+    if change < 3 or change > 65:
+        return False
+    return True
 
 def poll():
     restore()
@@ -113,7 +129,7 @@ def poll():
                         ACCOUNT.evaluate_exit(key, current[key])
                     except (ValueError, KeyError) as exc:
                         logging.warning("Paper exit skipped: %s", type(exc).__name__)
-            # Conservative single new position per cycle; ETH only until SOL origin validated.
+            # Conservative Telegram-inspired screening; ETH only until SOL origin validated.
             for t in tokens:
                 key = t["chain"] + ":" + t["address"]
                 if not eligible(t) or key in ACCOUNT.positions:
