@@ -2,6 +2,8 @@
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -25,6 +27,10 @@ STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
 LAST_PRICES = {}
+RADAR_PROCESS = None
+RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
+RADAR_SIGNAL_OFFSET = 0
+
 
 def valid_price(v):
     try:
@@ -130,23 +136,43 @@ def poll():
                     except (ValueError, KeyError) as exc:
                         logging.warning("Paper exit skipped: %s", type(exc).__name__)
             # Conservative Telegram-inspired screening; ETH only until SOL origin validated.
-            for t in tokens:
-                key = t["chain"] + ":" + t["address"]
-                if not eligible(t) or key in ACCOUNT.positions:
-                    continue
-                if len(ACCOUNT.positions) >= ACCOUNT.config.max_open_positions:
-                    break
-                try:
-                    ACCOUNT.buy(key, t["chain"], float(t["price"]), float(t["liquidity"]))
-                    break
-                except (ValueError, TypeError):
-                    continue
+            # Trade only tokens already approved and alerted by Telegram Radar.
+            global RADAR_SIGNAL_OFFSET
+            try:
+                with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
+                    journal.seek(RADAR_SIGNAL_OFFSET)
+                    records = journal.readlines()
+                    RADAR_SIGNAL_OFFSET = journal.tell()
+                for line in records:
+                    try:
+                        signal=json.loads(line)
+                        key=signal["chain"]+":"+signal["address"]
+                        price=valid_price(signal.get("price"))
+                        liquidity=valid_price(signal.get("liquidity"))
+                        if time.time()-float(signal.get("timestamp",0))>1800:
+                            continue
+                        if signal["chain"]!="eth" or not price or not liquidity:
+                            continue
+                        if key not in ACCOUNT.positions and len(ACCOUNT.positions)<ACCOUNT.config.max_open_positions:
+                            ACCOUNT.buy(key,"eth",price,liquidity)
+                            LAST_PRICES[key]=price
+                    except (ValueError,KeyError,TypeError):
+                        continue
+            except OSError:
+                pass
             save()
         time.sleep(288)
 
 @app.on_event("startup")
 def startup():
-    threading.Thread(target=poll, daemon=True, name="gmgn-paper",).start()
+    global RADAR_PROCESS
+    if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
+        env=dict(os.environ)
+        env["RADAR_EMBEDDED"]="1"
+        RADAR_PROCESS=subprocess.Popen([sys.executable,str(BASE.parent/"telegram_radar.py")],env=env)
+    else:
+        logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
+    threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
 
 @app.middleware("http")
 async def headers(request, call_next):
@@ -191,7 +217,7 @@ def status():
                 p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
             p["stop_price"] = p["entry_price"] * (1 - ACCOUNT.config.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
-                "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"],
+                "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
