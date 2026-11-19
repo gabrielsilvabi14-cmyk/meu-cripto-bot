@@ -1698,7 +1698,10 @@ def migrated_wallet_limits(pair):
                         value=raw*100 if name.endswith("_rate") and raw<=1 else raw if not name.endswith("_rate") and raw<=100 else None
                     break
             if value is not None: break
-        if value is None: return False,label+": percentual não verificável"
+        if value is None:
+            if label=="insiders":
+                continue  # Sem dado de insiders: desconhecido, nunca zero.
+            return False,label+": percentual não verificável"
         if value>=30: return False,label+": limite de 30% atingido"
     def find_value(*names):
         for name in names:
