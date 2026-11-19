@@ -133,34 +133,46 @@ def poll():
                 price = valid_price(t.get("price"))
                 if price:
                     current[t["chain"] + ":" + t["address"]] = price
-            for key in list(ACCOUNT.positions):
-                if key not in current:
-                    chain, address = key.split(':', 1)
-                    price = fetch_token_price(chain, address)
-                    if price:
-                        current[key] = price
-                    time.sleep(2)
+            # Network I/O must happen outside LOCK: a separate exit worker
+            # monitors open positions frequently and independently.
             LAST_PRICES.update(current)
             for t in tokens:
-                mc=valid_price(t.get('market_cap'))
-                if mc: LAST_MARKET_CAPS[t['chain']+':'+t['address']]=mc
-            for key in list(ACCOUNT.positions):
-                chain,address=key.split(':',1)
-                mc=fetch_token_market_cap(chain,address)
-                if mc: LAST_MARKET_CAPS[key]=mc
-                time.sleep(1)
-            # Exits only when a fresh, valid price is available for this cycle.
-            for key in list(ACCOUNT.positions):
-                if key in current:
-                    try:
-                        ACCOUNT.evaluate_exit(key, current[key])
-                    except (ValueError, KeyError) as exc:
-                        logging.warning("Paper exit skipped: %s", type(exc).__name__)
+                mc=valid_price(t.get("market_cap"))
+                if mc: LAST_MARKET_CAPS[t["chain"]+":"+t["address"]]=mc
             # Conservative Telegram-inspired screening;
             save()
 
         time.sleep(288)
 
+
+
+def monitor_exits():
+    """Poll open positions every ~15 seconds, without holding the portfolio lock during HTTP."""
+    while True:
+        try:
+            with LOCK:
+                keys=list(ACCOUNT.positions)
+            for key in keys:
+                try:
+                    chain,address=key.split(":",1)
+                    price=valid_price(fetch_token_price(chain,address))
+                    if price is None:
+                        logging.warning("PAPER MARK unavailable %s; stop/target not evaluated",key)
+                        continue
+                    with LOCK:
+                        LAST_PRICES[key]=price
+                        if key in ACCOUNT.positions:
+                            event=ACCOUNT.evaluate_exit(key,price)
+                            if event:
+                                logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s",
+                                             key,event.get("exit_reason"),event.get("realized_pnl_usd"),event.get("realized_pnl_pct"))
+                                save()
+                except Exception:
+                    logging.exception("PAPER EXIT monitor error for %s",key)
+                time.sleep(1)
+        except Exception:
+            logging.exception("PAPER EXIT monitor loop error")
+        time.sleep(15)
 
 
 
@@ -252,6 +264,7 @@ def startup():
         logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
     threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
     threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
+    threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
 
 @app.middleware("http")
 async def headers(request, call_next):
@@ -286,13 +299,14 @@ def status():
         equity = ACCOUNT.cash_usd
         for key, p in ACCOUNT.positions.items():
             mark = LAST_PRICES.get(key)
-            value = p.quantity * mark if mark else None
+            value = p.quantity * mark * (1-ACCOUNT.slippage_pct/100) * (1-ACCOUNT.fee_pct/100) if mark else None
             if value is not None:
                 equity += value
             positions.append({"token": key, "network": p.network, "quantity": p.quantity,
                               "entry_price": p.entry_price, "mark_price": mark,
                               "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
-                              "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd})
+                              "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
+                              "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
         token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
         for p in positions:
             p.update(token_meta.get(p["token"], {}))
