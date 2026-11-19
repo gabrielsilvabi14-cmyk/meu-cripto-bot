@@ -1751,94 +1751,11 @@ def run_radar(category, chain="sol"):
             score, eligible, reason, f = intelligence.evaluate(
                 pair, strategy, age_hours(pair)
             )
-            if category == "new":
-                # A rota normal mantém os filtros atuais. Para o padrão antecipado
-                # SOL/Pump.fun, a exceção baixa o piso de MC/liquidez sem alterar
-                # idade, preço, origem ou filtros das demais redes e estratégias.
-                config = intelligence.CONFIG[strategy]
-                age_ok = (
-                    f.get("age") is not None
-                    and config["age"][0] <= f["age"] <= config["age"][1]
-                )
-                cap_ok = (
-                    f.get("cap") is not None
-                    and config["cap"][0] <= f["cap"] <= config["cap"][1]
-                )
-                liquidity_ok = (
-                    f.get("liq") is not None
-                    and f["liq"] >= config["liq"]
-                )
-                price_ok = f.get("price") is not None and f["price"] > 0
-                hard_ok = age_ok and cap_ok and liquidity_ok and price_ok
-                early_pattern_ok = (
-                    chain == "sol" and age_ok and price_ok
-                    and f.get("cap") is not None
-                    and 3000 <= f["cap"] <= config["cap"][1]
-                    and f.get("liq") is not None and f["liq"] >= 10000
-                )
-                if not hard_ok and not early_pattern_ok:
-                    eligible = False
-                    reason = "idade, MC abaixo do piso do setup, liquidez ou preço fora do filtro"
-                else:
-                    if hard_ok and eligible and score < 60:
-                        eligible = False
-                        reason = "pontuação abaixo de 60"
-                    candles, resolution = gmgn_kline_history(pair, chain)
-                    setup_reason = "K-line indisponível"
-                    if hard_ok and eligible:
-                        reversal, setup_reason = gmgn_reversal_setup(
-                            pair, candles, resolution
-                        )
-                        if reversal is not None:
-                            # Bônus ADITIVO ao score-base: os critérios gerais permanecem.
-                            # A observação histórica não é previsão de retorno.
-                            reversal["score_bonus"] = 15
-                            score = min(100, score + reversal["score_bonus"])
-                            pair["reversal_setup"] = reversal
-                            f["setup_type"] = "reversão após queda"
-                            f["reversal_setup"] = reversal
-                    if not pair.get("reversal_setup"):
-                        eligible = False
-                        accumulation, setup_reason = gmgn_accumulation_setup(
-                            pair, candles, resolution, f, strategy
-                        )
-                        if accumulation is not None:
-                            # O bônus do setup soma à pontuação geral; não substitui a nota mínima.
-                            accumulation["score_bonus"] = round(accumulation["score"] * 0.25)
-                            score = min(100, score + accumulation["score_bonus"])
-                            pattern_reason = (
-                                "segunda perna após reacumulação"
-                                if accumulation.get("setup_mode") == "segunda perna"
-                                else "acumulação gradual antes de rompimento"
-                            )
-                            if chain == "sol":
-                                # Setup SOL/Pump.fun tem exceção: padrão detectado envia
-                                # mesmo abaixo de 60 ou dos pisos gerais de MC/liquidez.
-                                eligible = True
-                                f["pattern_override"] = True
-                                override_reasons = []
-                                if not hard_ok:
-                                    override_reasons.append("piso geral de MC/liquidez")
-                                if score < 60:
-                                    override_reasons.append("pontuação menor que 60")
-                                accumulation["override_reasons"] = override_reasons
-                                reason = pattern_reason + " (exceção de padrão)"
-                            elif score >= 60:
-                                eligible = True
-                                reason = pattern_reason
-                            else:
-                                eligible = False
-                                reason = "pontuação abaixo de 60 após análise do setup"
-
-                            if eligible:
-                                pair["accumulation_setup"] = accumulation
-                                f["setup_type"] = accumulation.get("setup_mode") or "acumulação gradual"
-                                f["accumulation_setup"] = accumulation
-                        else:
-                            reason = setup_reason
-                    elif hard_ok:
-                        eligible = True
-                        reason = "reversão após queda confirmada"
+            # New migrated-only strategy: safety, age and buy pressure were
+            # checked above. Legacy reversal/accumulation and score thresholds
+            # must not silently block these user-selected opportunities.
+            eligible = f.get("price") is not None and f["price"] > 0
+            reason = "migração concluída; segurança e compras verificadas" if eligible else "preço inválido"
             try:
                 intelligence.record(mint, strategy, score, eligible, reason, f)
             except Exception as exc:
