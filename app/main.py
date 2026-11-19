@@ -205,6 +205,8 @@ def signal_worker():
                             reason="sinal expirado"
                         elif chain not in ("sol","eth"):
                             reason="rede não habilitada"
+                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (60 < signal["score"] <= 100):
+                            reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
                         elif not price:
                             reason="preço inválido"
                         elif key in ACCOUNT.positions:
