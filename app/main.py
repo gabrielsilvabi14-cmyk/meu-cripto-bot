@@ -106,6 +106,7 @@ def poll():
     restore()
     logging.info("GMGN paper worker started; key configured=%s", bool(os.getenv("GMGN_API_KEY")))
     while True:
+        cycle_started = time.monotonic()
         tokens, errors, chain_status = [], {}, {} 
         with LOCK:
             MARKET["phase"] = "consultando GMGN"
@@ -141,13 +142,16 @@ def poll():
             # Conservative Telegram-inspired screening;
             save()
 
-        time.sleep(288)
+        elapsed = time.monotonic() - cycle_started
+        logging.info("GMGN RANK cycle finished elapsed=%.1fs tokens=%s next_in=%.1fs", elapsed, len(tokens), max(0, 300 - elapsed))
+        time.sleep(max(0, 300 - elapsed))
 
 
 
 def monitor_exits():
-    """Poll open positions every ~15 seconds, without holding the portfolio lock during HTTP."""
+    """Poll open positions once per 60-second cycle, without holding the portfolio lock during HTTP."""
     while True:
+        cycle_started = time.monotonic()
         try:
             with LOCK:
                 keys=list(ACCOUNT.positions)
@@ -171,7 +175,9 @@ def monitor_exits():
                 time.sleep(1)
         except Exception:
             logging.exception("PAPER EXIT monitor loop error")
-        time.sleep(60)
+        elapsed = time.monotonic() - cycle_started
+        logging.info("PAPER EXIT cycle finished positions=%s elapsed=%.1fs next_in=%.1fs", len(keys) if "keys" in locals() else 0, elapsed, max(0, 60 - elapsed))
+        time.sleep(max(0, 60 - elapsed))
 
 
 
@@ -217,7 +223,7 @@ def signal_worker():
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
                             reason="sinal expirado"
-                        elif chain not in ("sol","eth"):
+                        elif chain != "sol":
                             reason="rede não habilitada"
                         elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (60 < signal["score"] <= 100):
                             reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
