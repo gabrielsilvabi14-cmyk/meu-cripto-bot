@@ -141,7 +141,7 @@ def poll():
             # Conservative Telegram-inspired screening;
             save()
 
-        time.sleep(60)
+        time.sleep(288)
 
 
 
@@ -171,7 +171,7 @@ def monitor_exits():
                 time.sleep(1)
         except Exception:
             logging.exception("PAPER EXIT monitor loop error")
-        time.sleep(15)
+        time.sleep(60)
 
 
 
