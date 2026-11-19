@@ -400,7 +400,7 @@ def gmgn_to_pair(row, category, info=None, chain="sol"):
 
 
 def pumpfun_origin(data):
-    """Confirm Pump.fun origin using launchpad metadata, not the trading DEX."""
+    """Recognize Pump.fun launch origin without mistaking the trading pool for launchpad."""
     if not isinstance(data, dict):
         return False
     nodes = [data]
@@ -409,7 +409,8 @@ def pumpfun_origin(data):
             nodes.append(data[key])
     fields = ("launchpad", "launchpad_name", "launchpad_platform",
               "launch_platform", "platform", "platform_name",
-              "creation_platform", "source_platform")
+              "creation_platform", "source_platform", "launchpad_platform_v2")
+    seen_other = False
     for node in nodes:
         for key in fields:
             value = node.get(key)
@@ -417,9 +418,18 @@ def pumpfun_origin(data):
                 value = value.get("name") or value.get("platform") or value.get("id")
             if isinstance(value, str):
                 normalized = "".join(ch for ch in value.lower() if ch.isalnum())
-                if normalized in ("pumpfun", "pump"):
+                if normalized in ("pumpfun", "pump", "pumpfunv2"):
                     return True
-    return False
+                if normalized and normalized not in ("true", "false", "unknown", "none"):
+                    seen_other = True
+    if seen_other:
+        return False
+    # Pump.fun mint addresses commonly carry the 'pump' suffix. Accept this
+    # only when independently sourced from GMGN's completed-migration list;
+    # never use suffix alone or infer launch origin from exchange/DEX metadata.
+    mint = str(data.get("address") or data.get("token_address") or "")
+    return bool(data.get("radar_completed_source") is True
+                and mint.endswith("pump") and len(mint) >= 35)
 
 
 def gmgn_rank_rows(data):
@@ -456,7 +466,7 @@ def discover(category, chain="sol"):
             "launchpad_platform_v2": True,
             "limit": 80,
         }
-        # Todas as plataformas Solana, não somente Pump.fun.
+        # GMGN completed feed; filter origin locally, including verified Pump.fun mint provenance.
         payload = {
             "version": "v2",
             **{token_type: dict(section) for token_type in types},
