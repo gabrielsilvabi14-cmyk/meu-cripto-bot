@@ -7,6 +7,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from gmgn_shared_limit import request_slot, note_rate_limit
+
 HOST = "https://openapi.gmgn.ai"
 
 def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
@@ -22,9 +24,12 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
                   headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1",
                            "Accept": "application/json"})
     try:
-        with urlopen(req, timeout=20) as resp:
-            result = json.load(resp)
+        with request_slot():
+            with urlopen(req, timeout=20) as resp:
+                result = json.load(resp)
     except HTTPError as exc:
+        if exc.code == 429:
+            note_rate_limit(exc.headers)
         raise RuntimeError(f"GMGN HTTP {exc.code}") from None
     except (URLError, TimeoutError, ValueError) as exc:
         raise RuntimeError(f"GMGN indisponível ({type(exc).__name__})") from None
@@ -98,8 +103,9 @@ def fetch_token_price(chain: str, address: str) -> float | None:
     query=urlencode({"chain":chain,"address":address})
     req=Request(f"{HOST}/v1/token/info?{query}",headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
     try:
-        with urlopen(req,timeout=15) as resp:
-            result=json.load(resp)
+        with request_slot():
+            with urlopen(req,timeout=15) as resp:
+                result=json.load(resp)
         if str(result.get("code","0"))!="0":
             return None
         data=result.get("data",result)
@@ -114,6 +120,8 @@ def fetch_token_price(chain: str, address: str) -> float | None:
                         pass
     except (HTTPError,URLError,TimeoutError,ValueError,TypeError) as exc:
         import logging
+        if isinstance(exc, HTTPError) and exc.code == 429:
+            note_rate_limit(exc.headers)
         logging.warning("Position price unavailable for %s:%s (%s)",chain,address[:8],type(exc).__name__)
     return None
 
@@ -126,8 +134,9 @@ def fetch_token_market_cap(chain: str, address: str) -> float | None:
         return None
     req=Request(f"{HOST}/v1/token/info?"+urlencode({"chain":chain,"address":address}),headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
     try:
-        with urlopen(req,timeout=15) as resp:
-            result=json.load(resp)
+        with request_slot():
+            with urlopen(req,timeout=15) as resp:
+                result=json.load(resp)
         if str(result.get("code","0"))!="0":
             return None
         data=result.get("data",result)
@@ -142,6 +151,7 @@ def fetch_token_market_cap(chain: str, address: str) -> float | None:
                             return value
                     except (TypeError,ValueError):
                         pass
-    except (HTTPError,URLError,TimeoutError,ValueError,TypeError):
-        pass
+    except (HTTPError,URLError,TimeoutError,ValueError,TypeError) as exc:
+        if isinstance(exc, HTTPError) and exc.code == 429:
+            note_rate_limit(exc.headers)
     return None
