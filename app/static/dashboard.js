@@ -1,31 +1,65 @@
+'use strict';
 const $=id=>document.getElementById(id);
-const usd=v=>typeof v==='number'&&Number.isFinite(v)?'US$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'Sem cotação';
-const price=v=>typeof v==='number'&&v>0?'US$ '+v.toPrecision(6):'—';
-const pct=v=>typeof v==='number'?(v>=0?'+':'')+v.toFixed(2)+'%':'—';
-function text(tag,value,cls){const n=document.createElement(tag);n.textContent=value;if(cls)n.className=cls;return n}
-function gmgnLink(chain,address){if(!['sol','eth'].includes(chain)||!address||!/^[a-zA-Z0-9]{30,128}$/.test(address))return null;return 'https://gmgn.ai/'+chain+'/token/'+encodeURIComponent(address)}
-function addLink(row,chain,address){const url=gmgnLink(chain,address);if(!url)return;const a=text('a','Abrir contrato na GMGN ↗','gmgn-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';row.append(a)}
-function tokenId(s){const i=String(s||'').indexOf(':');return i<0?['','']:[s.slice(0,i),s.slice(i+1)]}
-function addToken(container,t){const row=document.createElement('div');row.className='token-row';row.append(text('strong',(t.symbol||t.name||'Token')+' · '+String(t.chain||'').toUpperCase()));row.append(text('small',t.address||'','contract'));addLink(row,t.chain,t.address);container.append(row)}
-async function refresh(){try{
-const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
-const d=await r.json(),m=d.market||{},tokens=m.tokens||[];
-$('connection').textContent=m.connected?'Conectado':(m.phase||'Aguardando');
-$('lastcheck').textContent=m.last_check?new Date(m.last_check).toLocaleString('pt-BR'):'Ainda não consultado';
-$('cycles').textContent=m.cycles||0;
-$('errors').textContent=Object.entries(m.errors||{}).map(([k,v])=>k.toUpperCase()+': '+v).join(' | ')||'Sem erros registrados';
-$('events').textContent=(d.trades||[]).length;
-$('cash').textContent=usd(d.cash_usd);$('equity').textContent=usd(d.estimated_equity_usd);
-const tokensEl=$('tokens');tokensEl.replaceChildren();tokens.forEach(t=>addToken(tokensEl,t));if(!tokens.length)tokensEl.textContent='Nenhum token recebido até agora.';
-const meta=new Map(tokens.map(t=>[t.chain+':'+t.address,t]));
-const pos=$('positions');pos.replaceChildren();
-for(const p of d.positions||[]){const [chain,address]=tokenId(p.token);const t=meta.get(p.token)||{};const card=document.createElement('div');card.className='position';
-card.append(text('strong',(p.symbol||t.symbol||'Token')+' · '+chain.toUpperCase()));
-card.append(text('small',address,'contract'));
-const fields=[['Entrada',price(p.entry_price)],['Preço atual',price(p.mark_price)],['Variação',pct(p.change_pct)],['Lucro/prejuízo estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',price(p.stop_price)]];
-const grid=document.createElement('div');grid.className='position-grid';for(const [k,v] of fields){const item=document.createElement('div');item.append(text('small',k),text('b',v));grid.append(item)}card.append(grid);addLink(card,chain,address);pos.append(card)}
-if(!pos.children.length)pos.textContent='Nenhuma posição aberta.';
-const trades=$('trades');trades.replaceChildren();for(const t of (d.trades||[]).slice(-20).reverse()){const [chain,address]=tokenId(t.token);const metaToken=meta.get(t.token)||{};const row=document.createElement('div');row.className='token-row';row.append(text('strong',(t.action==='PAPER_BUY'?'Compra fictícia':'Venda fictícia')+' · '+(metaToken.symbol||'Token')+' · '+chain.toUpperCase()));row.append(text('small',usd(t.notional_usd??t.net_usd)+(typeof t.realized_pnl_usd==='number'?' · Resultado: '+usd(t.realized_pnl_usd):'')));row.append(text('small',address,'contract'));addLink(row,chain,address);trades.append(row)}
-if(!trades.children.length)trades.textContent='Nenhuma operação simulada.';
-}catch(e){$('connection').textContent='Falha ao atualizar painel'}}
+const usd=v=>typeof v==='number'&&Number.isFinite(v)?'US$ '+v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
+const price=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?'US$ '+v.toPrecision(6):'—';
+const pct=v=>typeof v==='number'&&Number.isFinite(v)?(v>=0?'+':'')+v.toFixed(2)+'%':'—';
+function node(tag,value,cls){const n=document.createElement(tag);n.textContent=String(value??'');if(cls)n.className=cls;return n}
+function splitToken(s){const i=String(s||'').indexOf(':');return i<0?['','']:[s.slice(0,i),s.slice(i+1)]}
+function gmgnUrl(chain,address){
+ if(chain==='eth'&&/^0x[a-fA-F0-9]{40}$/.test(address))return 'https://gmgn.ai/eth/token/'+address;
+ if(chain==='sol'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address))return 'https://gmgn.ai/sol/token/'+address;
+ return null;
+}
+function contractLink(container,chain,address){
+ const url=gmgnUrl(chain,address);
+ if(!url){container.append(node('small',address||'Contrato não disponível','contract'));return}
+ const a=node('a',address,'contract contract-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.title='Abrir contrato na GMGN';container.append(a);
+}
+function openButton(container,chain,address){
+ const url=gmgnUrl(chain,address);if(!url)return;
+ const a=node('a','Abrir na GMGN ↗','gmgn-link');a.href=url;a.target='_blank';a.rel='noopener noreferrer';container.append(a);
+}
+function setValue(id,value){$(id).textContent=value}
+function renderToken(container,t){
+ const row=node('div','','token-row');row.append(node('strong',(t.symbol||t.name||'Token')+' · '+String(t.chain||'').toUpperCase()));
+ contractLink(row,t.chain,t.address);openButton(row,t.chain,t.address);container.append(row);
+}
+function renderPosition(container,p,meta){
+ const [chain,address]=splitToken(p.token),t=meta.get(p.token)||{};
+ const card=node('div','','position');
+ card.append(node('strong',(p.symbol||t.symbol||p.name||'Token')+' · '+chain.toUpperCase()));
+ contractLink(card,chain,address);
+ const fields=[['Preço de entrada',price(p.entry_price)],['Preço atual',price(p.mark_price)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',price(p.stop_price)]];
+ const grid=node('div','','position-grid');
+ for(const [k,v] of fields){const item=document.createElement('div');item.append(node('small',k),node('b',v, k==='Resultado estimado'&&typeof p.unrealized_pnl_usd==='number'?(p.unrealized_pnl_usd>=0?'positive':'negative'):''));grid.append(item)}
+ card.append(grid);openButton(card,chain,address);container.append(card);
+}
+function renderTrade(container,t,meta){
+ const [chain,address]=splitToken(t.token),known=meta.get(t.token)||{};
+ const row=node('div','','token-row');
+ row.append(node('strong',(t.action==='PAPER_BUY'?'🟢 Compra fictícia':'🔴 Venda fictícia')+' · '+(known.symbol||'Token')+' · '+chain.toUpperCase()));
+ row.append(node('small',usd(t.notional_usd??t.net_usd)+(typeof t.realized_pnl_usd==='number'?' · Resultado realizado: '+usd(t.realized_pnl_usd):'')));
+ contractLink(row,chain,address);openButton(row,chain,address);container.append(row);
+}
+async function refresh(){
+ try{
+  const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
+  const d=await r.json(),m=d.market||{},tokens=m.tokens||[],positions=d.positions||[],trades=d.trades||[];
+  setValue('connection',m.connected?'GMGN conectada':(m.phase||'Aguardando'));
+  setValue('lastcheck',m.last_check?new Date(m.last_check).toLocaleString('pt-BR'):'Aguardando');
+  setValue('cycles',m.cycles||0);
+  setValue('errors',Object.entries(m.errors||{}).map(([k,v])=>k.toUpperCase()+': '+v).join(' | ')||'Sem erros registrados');
+  setValue('cash',usd(d.cash_usd));setValue('equity',usd(d.estimated_equity_usd));
+  const pnl=typeof d.estimated_equity_usd==='number'?d.estimated_equity_usd-Number(d.initial_paper_capital_usd||100):null;
+  setValue('pnl',usd(pnl));$('pnl').className='value '+(pnl===null?'':pnl>=0?'positive':'negative');
+  setValue('position-count',positions.length);setValue('events',trades.length+' eventos');
+  const meta=new Map(tokens.map(t=>[t.chain+':'+t.address,t]));
+  const pos=$('positions');pos.replaceChildren();positions.forEach(p=>renderPosition(pos,p,meta));
+  if(!positions.length)pos.textContent='Nenhuma posição aberta no momento.';
+  const history=$('trades');history.replaceChildren();trades.slice(-25).reverse().forEach(t=>renderTrade(history,t,meta));
+  if(!trades.length)history.textContent='Nenhuma operação simulada.';
+  const list=$('tokens');list.replaceChildren();tokens.forEach(t=>renderToken(list,t));
+  if(!tokens.length)list.textContent='Nenhum token recebido da GMGN.';
+ }catch(e){setValue('connection','Falha ao consultar o painel');setValue('errors','Não foi possível atualizar os dados. Tente recarregar a página.')}
+}
 refresh();setInterval(refresh,30000);
