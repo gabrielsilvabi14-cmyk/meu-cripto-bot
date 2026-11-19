@@ -14,8 +14,9 @@ class Position:
     opened_at: str
     partial_taken: bool = False
     entry_market_cap: float | None = None
-    stop_pct: float = 12.0
-    target_pct: float = 50.0
+    stop_pct: float = 30.0
+    target_pct: float = 50.0  # legado: não dispara mais venda
+    highest_price: float | None = None
     last_mark_price: float | None = None
     last_mark_at: str | None = None
 
@@ -80,11 +81,11 @@ class PaperAccount:
         self._valid(price)
         pos.last_mark_price = price
         pos.last_mark_at = datetime.now(timezone.utc).isoformat()
-        change_pct = (price / pos.entry_price - 1) * 100
-        if change_pct <= -pos.stop_pct:
-            pos._exit_reason = "stop_loss"
-            return self.sell(token, price)
-        if change_pct >= pos.target_pct:
-            pos._exit_reason = "profit_target"
+        # High-water mark: jamais reduz o stop ao observar queda.
+        previous_peak = pos.highest_price if pos.highest_price and isfinite(pos.highest_price) else pos.entry_price
+        pos.highest_price = max(pos.entry_price, previous_peak, price)
+        stop_price = pos.highest_price * (1 - pos.stop_pct / 100)
+        if price <= stop_price:
+            pos._exit_reason = "trailing_stop" if pos.highest_price > pos.entry_price else "stop_loss"
             return self.sell(token, price)
         return None
