@@ -7,8 +7,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.integrations.gmgn import fetch_rank
@@ -20,6 +20,7 @@ BASE = Path(__file__).resolve().parent
 app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
+INITIAL_CAPITAL = 100.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
@@ -37,6 +38,8 @@ def restore():
     try:
         from app.trading.paper import Position
         d = json.loads(STATE_FILE.read_text())
+        global INITIAL_CAPITAL
+        INITIAL_CAPITAL = float(d.get("initial_capital", 100.0))
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
         ACCOUNT.events = d["events"][-200:]
@@ -45,7 +48,7 @@ def restore():
 
 def save():
     from dataclasses import asdict
-    data = {"cash": ACCOUNT.cash_usd,
+    data = {"initial_capital": INITIAL_CAPITAL, "cash": ACCOUNT.cash_usd,
             "positions": {k: asdict(v) for k, v in ACCOUNT.positions.items()},
             "events": ACCOUNT.events[-200:]}
     try:
@@ -174,9 +177,39 @@ def status():
             p["stop_price"] = p["entry_price"] * (1 - ACCOUNT.config.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"],
-                "planned_risk_pct": 2, "initial_paper_capital_usd": 100,
+                "planned_risk_pct": 2, "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
                 "market": dict(MARKET), "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
+
+@app.post("/api/paper/reset")
+async def reset_paper(request: Request):
+    """Explicit reset only. Public endpoint because user chose a passwordless dashboard."""
+    global INITIAL_CAPITAL
+    origin = request.headers.get("origin", "")
+    host = request.headers.get("host", "")
+    if not origin or origin not in ("https://" + host, "http://" + host):
+        return JSONResponse({"error": "Origem não autorizada"}, status_code=403)
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        return JSONResponse({"error": "JSON obrigatório"}, status_code=415)
+    if int(request.headers.get("content-length") or "0") > 1024:
+        return JSONResponse({"error": "Dados muito grandes"}, status_code=413)
+    try:
+        payload = await request.json()
+        amount = float(payload.get("capital_usd"))
+        confirmed = payload.get("confirm_reset") is True
+        from math import isfinite
+        if not confirmed or not isfinite(amount) or amount < 10 or amount > 100000:
+            raise ValueError("Capital inválido ou redefinição não confirmada")
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse({"error": "Informe um capital entre US$ 10 e US$ 100.000 e confirme a redefinição"}, status_code=400)
+    with LOCK:
+        INITIAL_CAPITAL = round(amount, 2)
+        ACCOUNT.cash_usd = INITIAL_CAPITAL
+        ACCOUNT.positions.clear()
+        ACCOUNT.events.clear()
+        save()
+    return {"ok": True, "initial_paper_capital_usd": INITIAL_CAPITAL,
+            "notice": "Carteira fictícia reiniciada; operações anteriores apagadas"}
