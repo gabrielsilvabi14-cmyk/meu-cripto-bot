@@ -140,9 +140,14 @@ def fetch_token_price(chain: str, address: str) -> float | None:
         with urlopen(req, timeout=12) as resp:
             result = json.load(resp)
         pairs = [p for p in (result.get("pairs") or [])
-                 if p.get("chainId") == "solana"
+                 if isinstance(p, dict) and p.get("chainId") == "solana"
                  and str((p.get("baseToken") or {}).get("address", "")).lower() == address.lower()]
-        pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
+        def pair_liquidity(p):
+            try:
+                return float((p.get("liquidity") or {}).get("usd") or 0)
+            except (TypeError, ValueError):
+                return 0
+        pairs.sort(key=pair_liquidity, reverse=True)
         for pair in pairs:
             try:
                 price = float(pair.get("priceUsd"))
