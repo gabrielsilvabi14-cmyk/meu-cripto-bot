@@ -441,7 +441,7 @@ def gmgn_signal_rows(data):
 
 def discover(category, chain="sol"):
     if category == "new":
-        types = ("new_creation", "near_completion", "completed")
+        types = ("completed",)
         section = {
             "filters": ["offchain", "onchain"],
             "launchpad_platform_v2": True,
@@ -587,7 +587,7 @@ def discover(category, chain="sol"):
                 merged = dict(existing)
                 merged.update({k: v for k, v in row.items() if v is not None})
                 selected[key] = merged
-        rows = list(selected.values())
+        rows = [dict(row, radar_completed_source=True) for row in selected.values() if str(row.get("address") or row.get("token_address") or "").lower() in trench_unique]
 
     else:
         # Combina janela curta e tendência horária para não depender de um
@@ -1684,6 +1684,25 @@ def gmgn_accumulation_setup(pair, candles, resolution, features, strategy):
     }, "segunda perna após reacumulação" if second_leg else "base local despertando"
 
 
+def migrated_wallet_limits(pair):
+    data=pair.get("gmgn") or {}
+    sources=[data]+[data[k] for k in ("stat","security","token_security","risk","dev") if isinstance(data.get(k),dict)]
+    checks={"top10":("top_10_holder_rate","top10_holder_rate","top10_holder_percent"),"bundlers":("bundler_rate","bundler_trader_amount_rate","top_bundler_trader_percentage"),"snipers":("top70_sniper_hold_rate","sniper_rate"),"insiders":("insider_rate",),"phishing_wallets":()}
+    for label,names in checks.items():
+        value=None
+        for name in names:
+            for source in sources:
+                if source.get(name) is not None:
+                    raw=num(source[name],default=None)
+                    if raw is not None and raw>=0:
+                        value=raw*100 if name.endswith("_rate") and raw<=1 else raw if not name.endswith("_rate") and raw<=100 else None
+                    break
+            if value is not None: break
+        if value is None: return False,label+": percentual não verificável"
+        if value>=30: return False,label+": limite de 30% atingido"
+    return True,"ok"
+
+
 def run_radar(category, chain="sol"):
     strategy = f"{chain}_{category}" if chain in ("bsc", "eth") else category
     stats = {"candidates": 0, "approved": 0, "duplicates": 0, "alerts": 0}
@@ -1703,6 +1722,12 @@ def run_radar(category, chain="sol"):
                 stats["duplicates"] += 1
                 continue
 
+            if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
+                continue
+            passed, audit_reason = migrated_wallet_limits(pair)
+            if not passed:
+                rejections[audit_reason] = rejections.get(audit_reason,0)+1
+                continue
             score, eligible, reason, f = intelligence.evaluate(
                 pair, strategy, age_hours(pair)
             )
