@@ -87,10 +87,4 @@ class PaperAccount:
         if change_pct >= pos.target_pct:
             pos._exit_reason = "profit_target"
             return self.sell(token, price)
-        if change_pct >= pos.target_pct / 2 and not pos.partial_taken:
-            pos._exit_reason = "partial_profit_target"
-            event = self.sell(token, price, 0.5)
-            if token in self.positions:
-                self.positions[token].partial_taken = True
-            return event
         return None
