@@ -1700,6 +1700,36 @@ def migrated_wallet_limits(pair):
             if value is not None: break
         if value is None: return False,label+": percentual não verificável"
         if value>=30: return False,label+": limite de 30% atingido"
+    def find_value(*names):
+        for name in names:
+            for source in sources:
+                if source.get(name) is not None:
+                    return source[name]
+        return None
+    def as_bool(value):
+        if isinstance(value,bool): return value
+        if isinstance(value,(int,float)) and value in (0,1): return bool(value)
+        if isinstance(value,str) and value.strip().lower() in ("true","false","1","0"):
+            return value.strip().lower() in ("true","1")
+        return None
+    for label,names in (
+        ("NoMint",("is_mintable","mintable")),
+        ("Sem Blacklist",("is_blacklisted","blacklist")),
+        ("Excluir Wash Trading",("is_wash_trading",)),
+    ):
+        value=as_bool(find_value(*names))
+        if value is None: return False,label+": não verificável"
+        if value: return False,label+": risco identificado"
+    burned=None
+    for name in ("lp_burned_percent","burnt_rate"):
+        raw=find_value(name)
+        if raw is None: continue
+        val=num(raw,default=None)
+        if val is not None and val>=0:
+            burned=val*100 if name.endswith("_rate") and val<=1 else val if not name.endswith("_rate") and val<=100 else None
+        break
+    if burned is None: return False,"LP queimado: não verificável"
+    if burned<=0: return False,"LP não queimado"
     return True,"ok"
 
 
