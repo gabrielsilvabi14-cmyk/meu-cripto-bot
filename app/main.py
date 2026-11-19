@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.integrations.gmgn import fetch_rank
+from app.integrations.gmgn import fetch_rank, fetch_token_price
 from app.trading.paper import PaperAccount
 
 logging.basicConfig(level=logging.INFO)
@@ -127,6 +127,13 @@ def poll():
                 price = valid_price(t.get("price"))
                 if price:
                     current[t["chain"] + ":" + t["address"]] = price
+            for key in list(ACCOUNT.positions):
+                if key not in current:
+                    chain, address = key.split(':', 1)
+                    price = fetch_token_price(chain, address)
+                    if price:
+                        current[key] = price
+                    time.sleep(2)
             LAST_PRICES.update(current)
             # Exits only when a fresh, valid price is available for this cycle.
             for key in list(ACCOUNT.positions):
