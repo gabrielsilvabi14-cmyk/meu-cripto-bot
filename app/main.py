@@ -250,6 +250,10 @@ def signal_worker():
                             reason=("MIGRAÇÃO ANTIGA: mais de 10 minutos desde " +
                                     ("migração explícita" if signal["migration_source"]=="migration_explicit" else "criação do pool concluído (proxy)") +
                                     "; compra bloqueada")
+                        elif signal.get("lp_protection_status") != "confirmed":
+                            lp_status = signal.get("lp_protection_status")
+                            lp_reason = str(signal.get("lp_protection_reason") or "sem dados suficientes")[:180]
+                            reason = ("LP NÃO PROTEGIDA" if lp_status == "unprotected" else "LP NÃO VERIFICADA") + ": " + lp_reason + "; compra fictícia bloqueada"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
