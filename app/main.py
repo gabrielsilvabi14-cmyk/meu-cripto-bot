@@ -149,6 +149,26 @@ def poll():
 
 
 
+
+def buy_every_alert(key,chain,price):
+    """Independent $20 paper position for each alerted token; virtual funding is explicit."""
+    global INITIAL_CAPITAL
+    from app.trading.paper import Position
+    notional=20.0
+    fee=notional*ACCOUNT.fee_pct/100
+    required=notional+fee
+    if ACCOUNT.cash_usd<required:
+        added=round(required-ACCOUNT.cash_usd+20.0,2)
+        ACCOUNT.cash_usd+=added
+        INITIAL_CAPITAL+=added
+        ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
+    execution_price=price*(1+ACCOUNT.slippage_pct/100)
+    ACCOUNT.cash_usd-=required
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat())
+    event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
+    ACCOUNT.events.append(event)
+    return event
+
 def signal_worker():
     """Read Telegram-approved signals promptly and explain every paper decision."""
     global RADAR_SIGNAL_OFFSET
@@ -168,21 +188,17 @@ def signal_worker():
                     liquidity=valid_price(signal.get("liquidity"))
                     reason=None
                     with LOCK:
-                        if time.time()-float(signal.get("timestamp",0))>1800:
+                        if time.time()-float(signal.get("timestamp",0))>86400:
                             reason="sinal expirado"
                         elif chain not in ("sol","eth"):
                             reason="rede não habilitada"
-                        elif chain=="sol" and not signal.get("pumpfun_confirmed"):
-                            reason="origem Pump.fun não confirmada"
                         elif not price:
                             reason="preço inválido"
-                        elif not liquidity:
-                            reason="liquidez inválida"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
                             try:
-                                event=ACCOUNT.buy(key,chain,price,liquidity)
+                                event=buy_every_alert(key,chain,price)
                                 LAST_PRICES[key]=price
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
                                 logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
