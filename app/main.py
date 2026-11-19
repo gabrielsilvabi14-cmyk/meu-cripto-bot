@@ -11,6 +11,7 @@ from app.integrations.gmgn import fetch_rank
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 PASSWORD = os.getenv("TRADER_PASSWORD", "")
@@ -32,6 +33,7 @@ app.add_middleware(
     max_age=3600,
 )
 BASE = Path(__file__).resolve().parent
+app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 FAILED: dict[str, list[float]] = {}
 WINDOW_SECONDS = 15 * 60
 MAX_FAILED = 6
@@ -48,7 +50,7 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
     return response
 
 def authorized(request: Request) -> bool:
