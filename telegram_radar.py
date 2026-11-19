@@ -1707,43 +1707,108 @@ def migration_evidence(pair):
 
 
 def paper_lp_protection(pair):
-    """Require explicit LP burn or verifiable active LP lock, not token burn."""
-    data = pair.get('gmgn') or {}
-    nodes = [data] + [data[k] for k in ('security','pool','risk') if isinstance(data.get(k),dict)]
-    def pct(value, fraction=False):
-        raw = num(value, default=None)
-        if raw is None or raw < 0: return None
-        if fraction: return raw*100 if raw <= 1 else None
-        return raw if raw <= 100 else None
+    """Fail closed: token burn is not LP burn; lock must be explicit and active."""
+    data = pair.get("gmgn") or {}
+    if not isinstance(data, dict):
+        data = {}
+    nodes = [data] + [data[k] for k in ("security", "pool", "risk")
+                      if isinstance(data.get(k), dict)]
+
+    def percentage(raw, fraction=False):
+        value = num(raw, default=None)
+        if value is None or value < 0:
+            return None
+        if fraction:
+            return value * 100 if value <= 1 else None
+        return value if value <= 100 else None
+
+    def timestamp(raw):
+        value = num(raw, default=None)
+        if value is None or value <= 0:
+            return None
+        return value / 1000 if value > 1e11 else value
+
+    def flag(raw):
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)) and raw in (0, 1):
+            return bool(raw)
+        if isinstance(raw, str) and raw.strip().lower() in ("true", "false", "1", "0"):
+            return raw.strip().lower() in ("true", "1")
+        return None
+
+    # Only fields explicitly identifying LP burn count as burn evidence.
+    partial_burn = False
     for node in nodes:
-        for field in ('lp_burned_percent','lp_burned_rate','lp_burn_rate'):
-            value = pct(node.get(field), field.endswith(('_rate',)))
+        for name in ("lp_burned_percent", "lp_burned_rate", "lp_burn_rate"):
+            value = percentage(node.get(name), name.endswith("_rate"))
             if value is not None:
-                if value >= 95: return 'confirmed', 'LP queimada >=95% ('+field+')'
-                return 'unprotected', 'LP queimada abaixo de 95% ('+field+')'
-        for field in ('is_lp_burned','lp_burned'):
-            raw = node.get(field)
-            if raw is True or str(raw).lower() in ('true','1'):
-                return 'confirmed', 'LP queimada indicada ('+field+')'
-            if raw is False or str(raw).lower() in ('false','0'):
-                return 'unprotected', 'LP não queimada ('+field+')'
-    # Lock only if its structure explicitly provides LP lock evidence and active expiry.
+                if value >= 95:
+                    return "confirmed", f"LP queimada {value:.1f}% ({name})"
+                partial_burn = True
+        for name in ("is_lp_burned", "lp_burned"):
+            value = flag(node.get(name))
+            if value is True:
+                return "confirmed", f"LP queimada confirmada pelo campo {name}"
+            if value is False:
+                partial_burn = True
+
+    # Lock metadata may be a nested dictionary, list, or wrapper.
+    # Do not infer lock from generic burn_status, burn_ratio or locked_ratio.
     now = time.time()
+    lock_fields_seen = set()
+    def visit(value, depth=0):
+        if depth > 4:
+            return None
+        if isinstance(value, list):
+            for item in value[:30]:
+                found = visit(item, depth + 1)
+                if found:
+                    return found
+        elif isinstance(value, dict):
+            lock_fields_seen.update(str(k) for k in value.keys())
+            ratio = None
+            for key in ("lp_locked_percent", "locked_percent", "lock_percent", "locked_ratio"):
+                if key in value:
+                    ratio = percentage(value[key], key == "locked_ratio")
+                    if ratio is not None:
+                        break
+            expiry = None
+            for key in ("unlock_timestamp", "unlock_time", "expire_timestamp",
+                        "end_timestamp", "unlock_at", "end_time"):
+                if key in value:
+                    expiry = timestamp(value[key])
+                    if expiry is not None:
+                        break
+            explicit_lp = (flag(value.get("is_lp_locked")) is True or
+                           flag(value.get("lp_locked")) is True or
+                           any(key in value for key in ("lp_locked_percent", "lp_lock_percent")))
+            # Generic lock percentage can be used only inside an explicit lockInfo
+            # structure with a future unlock time, never as an isolated pool ratio.
+            if ratio is not None and ratio >= 95 and expiry is not None and expiry > now:
+                return f"LP bloqueada {ratio:.1f}% até {int(expiry)} (lockInfo)"
+            for key, nested in value.items():
+                if isinstance(nested, (dict, list)):
+                    found = visit(nested, depth + 1)
+                    if found:
+                        return found
+        return None
+
     for node in nodes:
-        for field in ('lockInfo','lock_summary'):
-            lock = node.get(field)
-            locks = lock if isinstance(lock,list) else [lock]
-            for entry in locks:
-                if not isinstance(entry,dict): continue
-                raw_pct = entry.get('locked_percent')
-                if raw_pct is None: raw_pct = entry.get('lock_percent')
-                if raw_pct is None: raw_pct = entry.get('locked_ratio')
-                percent = pct(raw_pct, 'locked_ratio' in entry and entry.get('locked_percent') is None and entry.get('lock_percent') is None)
-                expires = num(entry.get('unlock_timestamp') or entry.get('unlock_time') or entry.get('expire_timestamp') or entry.get('end_timestamp'),default=None)
-                if expires is not None and expires > 1e11: expires /= 1000
-                if percent is not None and percent >= 95 and expires is not None and expires > now:
-                    return 'confirmed', 'LP bloqueada >=95% até timestamp '+str(int(expires))
-    return 'unknown', 'LP queimada/bloqueada não comprovada pela GMGN'
+        for name in ("lockInfo", "lock_summary"):
+            if node.get(name) is not None:
+                result = visit(node[name])
+                if result:
+                    return "confirmed", result
+
+    # Log only the schema/field names, never addresses, secrets, or arbitrary values.
+    if lock_fields_seen:
+        log.info("PAPER LP LOCK SCHEMA fields=%s",
+                 sorted(lock_fields_seen)[:50])
+    if partial_burn:
+        return "unprotected", "LP não comprovadamente queimada >=95% e sem lock ativo confirmado"
+    return "unknown", "GMGN não comprovou queima >=95% ou lock ativo >=95% da LP"
+
 
 def migrated_wallet_limits(pair):
     data=pair.get("gmgn") or {}
