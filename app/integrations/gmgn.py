@@ -86,3 +86,33 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
                        "age_hours": age, "market_cap": metric(item, "market_cap", "usd_market_cap", "marketCap"),
                        "source": "GMGN ranking; sem validação Pump.fun"})
     return output
+
+
+def fetch_token_price(chain: str, address: str) -> float | None:
+    """Refresh an open paper position even when it is absent from ranking."""
+    if chain not in ("sol","eth") or not address:
+        return None
+    key=os.environ.get("GMGN_API_KEY","").strip()
+    if not key:
+        return None
+    query=urlencode({"chain":chain,"address":address})
+    req=Request(f"{HOST}/v1/token/info?{query}",headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
+    try:
+        with urlopen(req,timeout=15) as resp:
+            result=json.load(resp)
+        if str(result.get("code","0"))!="0":
+            return None
+        data=result.get("data",result)
+        for node in (data,data.get("token") if isinstance(data,dict) else None,data.get("token_info") if isinstance(data,dict) else None,data.get("info") if isinstance(data,dict) else None):
+            if isinstance(node,dict):
+                for field in ("price","price_usd","priceUsd"):
+                    try:
+                        value=float(node.get(field))
+                        if 0<value<1e12:
+                            return value
+                    except (TypeError,ValueError):
+                        pass
+    except (HTTPError,URLError,TimeoutError,ValueError,TypeError) as exc:
+        import logging
+        logging.warning("Position price unavailable for %s:%s (%s)",chain,address[:8],type(exc).__name__)
+    return None
