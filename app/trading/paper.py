@@ -45,7 +45,7 @@ class PaperAccount:
             raise ValueError("Insufficient paper cash")
         self.cash_usd -= total
         self.positions[token] = Position(token, network, notional / execution_price, execution_price, total, datetime.now(timezone.utc).isoformat())
-        event = {"action": "PAPER_BUY", "token": token, "network": network, "notional_usd": round(notional, 2), "fee_usd": round(fee, 4)}
+        event = {"action": "PAPER_BUY", "token": token, "network": network, "notional_usd": round(notional, 2), "fee_usd": round(fee, 4), "entry_price": execution_price, "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
@@ -64,7 +64,8 @@ class PaperAccount:
         pos.entry_cost_usd -= cost_basis
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
-        event = {"action": "PAPER_SELL", "token": token, "fraction": fraction, "net_usd": round(proceeds, 4), "realized_pnl_usd": round(proceeds - cost_basis, 4)}
+        pnl = proceeds - cost_basis
+        event = {"action": "PAPER_SELL", "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
