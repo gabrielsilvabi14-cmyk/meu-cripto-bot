@@ -253,7 +253,7 @@ def signal_worker():
                                 LAST_PRICES[key]=price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat(),"score":signal.get("score"),"migration_timestamp":signal.get("migration_timestamp"),"migration_source":signal.get("migration_source"),"market_cap":signal.get("market_cap"),"liquidity":signal.get("liquidity"),"symbol":signal.get("symbol")})
                                 SIGNAL_STATS["bought"] += 1
                                 logging.info("PAPER BUY from Telegram Radar %s: %s migration_source=%s age_seconds=%.1f",key,event,signal.get("migration_source"),time.time()-float(signal["migration_timestamp"]))
                                 save()
@@ -262,7 +262,7 @@ def signal_worker():
                         if reason:
                             SIGNAL_STATS["skipped"] += 1
                             logging.info("PAPER SKIP %s: %s",key,reason)
-                            MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
+                            MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat(),"score":signal.get("score"),"migration_timestamp":signal.get("migration_timestamp"),"migration_source":signal.get("migration_source"),"market_cap":signal.get("market_cap"),"liquidity":signal.get("liquidity"),"symbol":signal.get("symbol")})
                         MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
                 except Exception as exc:
                     SIGNAL_STATS["last_error"] = str(exc)[:200]
