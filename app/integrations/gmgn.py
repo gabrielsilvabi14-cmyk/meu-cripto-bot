@@ -242,3 +242,11 @@ def fetch_token_market_cap(chain: str, address: str) -> float | None:
         if isinstance(exc, HTTPError) and exc.code == 429:
             note_rate_limit(exc.headers)
     return None
+
+def fetch_market_observation(chain: str, address: str) -> dict | None:
+    """Return GMGN live analytics when authorized, otherwise DexScreener price only."""
+    snapshot = fetch_token_snapshot(chain, address)
+    if snapshot:
+        return snapshot
+    price = fetch_token_price(chain, address)
+    return {"price": price, "source": "dexscreener"} if price is not None else None
