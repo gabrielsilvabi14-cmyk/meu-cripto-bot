@@ -1858,6 +1858,27 @@ def migrated_wallet_limits(pair):
     return True,"ok"
 
 
+def record_radar_rejection(pair, chain, category, reason, score=None):
+    """Append a token-level rejection for the read-only dashboard."""
+    try:
+        token = pair.get("baseToken") or {}
+        mint = token.get("address")
+        if not mint:
+            return
+        record = {
+            "chain": chain, "address": mint, "symbol": token.get("symbol"),
+            "category": category, "reason": str(reason)[:240],
+            "score": score, "market_cap": num(pair.get("marketCap"), default=None),
+            "liquidity": num((pair.get("liquidity") or {}).get("usd"), default=None),
+            "timestamp": time.time(),
+        }
+        path = os.getenv("RADAR_REJECTIONS_FILE", "/tmp/gmgn_radar_rejections.jsonl")
+        with open(path, "a", encoding="utf-8") as journal:
+            journal.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError) as exc:
+        log.warning("RADAR REJECTION JOURNAL FAILED: %s", type(exc).__name__)
+
+
 def run_radar(category, chain="sol"):
     strategy = f"{chain}_{category}" if chain in ("bsc", "eth") else category
     stats = {"candidates": 0, "approved": 0, "duplicates": 0, "alerts": 0}
@@ -1872,6 +1893,7 @@ def run_radar(category, chain="sol"):
                 continue
             if chain != "sol" or not pumpfun_origin(pair.get("gmgn") or {}):
                 rejections["origem_pumpfun_nao_confirmada"] = rejections.get("origem_pumpfun_nao_confirmada", 0) + 1
+                record_radar_rejection(pair, chain, category, "origem Pump.fun não confirmada", score=locals().get("final_score") if "origem Pump.fun não confirmada" == "pontuação de 60 ou menos" else None)
                 continue
             if category == "new" and (
                 was_sent(f"{chain}:{mint}") or was_sent(mint)
@@ -1885,16 +1907,19 @@ def run_radar(category, chain="sol"):
             age=age_hours(pair)
             if age is None or not (5/60 <= age <= 24):
                 rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
+                record_radar_rejection(pair, chain, category, "idade fora do intervalo permitido", score=locals().get("final_score") if "idade fora do intervalo permitido" == "pontuação de 60 ou menos" else None)
                 continue
             tx=(pair.get("txns") or {}).get("h1") or {}
             buys=num(tx.get("buys"),default=None)
             sells=num(tx.get("sells"),default=None)
             if buys is None or sells is None or buys<=sells:
                 rejections["compras não superam vendas"]=rejections.get("compras não superam vendas",0)+1
+                record_radar_rejection(pair, chain, category, "compras não superam vendas", score=locals().get("final_score") if "compras não superam vendas" == "pontuação de 60 ou menos" else None)
                 continue
             passed, audit_reason = migrated_wallet_limits(pair)
             if not passed:
                 rejections[audit_reason] = rejections.get(audit_reason,0)+1
+                record_radar_rejection(pair, chain, category, audit_reason, score=locals().get("final_score") if audit_reason == "pontuação de 60 ou menos" else None)
                 continue
             score, eligible, reason, f = intelligence.evaluate(
                 pair, strategy, age_hours(pair)
@@ -1914,6 +1939,7 @@ def run_radar(category, chain="sol"):
                 f["setup_type"] = "reversão após queda"
             if age > 2 and reversal is None:
                 rejections["fora da janela de lançamento sem reversão"] = rejections.get("fora da janela de lançamento sem reversão", 0) + 1
+                record_radar_rejection(pair, chain, category, "fora da janela de lançamento sem reversão", score=locals().get("final_score") if "fora da janela de lançamento sem reversão" == "pontuação de 60 ou menos" else None)
                 continue
             # New migrated-only strategy: safety, age and buy pressure were
             # checked above. Legacy reversal/accumulation and score thresholds
@@ -1926,6 +1952,7 @@ def run_radar(category, chain="sol"):
                 log.warning("Histórico intelligence: %s", exc)
             if not eligible:
                 rejections[reason] = rejections.get(reason, 0) + 1
+                record_radar_rejection(pair, chain, category, reason, score=locals().get("final_score") if reason == "pontuação de 60 ou menos" else None)
                 continue
             stats["approved"] += 1
             if (was_sent(f"{chain}:{mint}") or was_sent(mint)
@@ -1939,6 +1966,7 @@ def run_radar(category, chain="sol"):
             # Strict paper/alert threshold, including high-return pattern overrides.
             if final_score <= 60:
                 rejections["pontuação de 60 ou menos"] = rejections.get("pontuação de 60 ou menos", 0) + 1
+                record_radar_rejection(pair, chain, category, "pontuação de 60 ou menos", score=locals().get("final_score") if "pontuação de 60 ou menos" == "pontuação de 60 ou menos" else None)
                 continue
             migrated_at, migration_source, _ = migration_evidence(pair)
             migration_age = time.time() - migrated_at if migrated_at is not None else None
@@ -1946,6 +1974,7 @@ def run_radar(category, chain="sol"):
                           and migration_age is not None and 0 <= migration_age <= 600)
             if not actionable:
                 rejections["fora dos 10 minutos após migração confirmada"] = rejections.get("fora dos 10 minutos após migração confirmada", 0) + 1
+                record_radar_rejection(pair, chain, category, "fora dos 10 minutos após migração confirmada", score=locals().get("final_score") if "fora dos 10 minutos após migração confirmada" == "pontuação de 60 ou menos" else None)
                 continue
             # Keep high-return setups, but prioritize actionable paper-entry windows.
             alert_priority = 1 if f.get("pattern_override") else 0
