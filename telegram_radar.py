@@ -1938,6 +1938,9 @@ def run_radar(category, chain="sol"):
             migration_age = time.time() - migrated_at if migrated_at is not None else None
             actionable = (migration_source in ("migration_explicit", "completed_pool_created_proxy")
                           and migration_age is not None and 0 <= migration_age <= 600)
+            if not actionable:
+                rejections["fora dos 10 minutos após migração confirmada"] = rejections.get("fora dos 10 minutos após migração confirmada", 0) + 1
+                continue
             # Keep high-return setups, but prioritize actionable paper-entry windows.
             alert_priority = 1 if f.get("pattern_override") else 0
             approved.append((int(actionable), alert_priority, final_score, mint, pair, f))
