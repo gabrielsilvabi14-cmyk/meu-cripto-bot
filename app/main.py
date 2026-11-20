@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap
 from app.trading.paper import PaperAccount
+from app.trading.adaptive import evaluate as evaluate_learning
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_url=None)
@@ -238,8 +239,8 @@ def signal_worker():
                             reason="sinal expirado"
                         elif chain != "sol":
                             reason="rede não habilitada"
-                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (60 < signal["score"] <= 100):
-                            reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
+                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
+                            reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
                         elif not price:
                             reason="preço inválido"
                         elif key in ACCOUNT.positions:
@@ -337,7 +338,7 @@ def status():
             p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
+                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
