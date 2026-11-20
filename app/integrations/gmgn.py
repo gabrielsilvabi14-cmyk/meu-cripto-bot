@@ -129,7 +129,7 @@ def fetch_token_price(chain: str, address: str) -> float | None:
                 note_rate_limit(exc.headers)
             if exc.code in (401, 403):
                 _PRICE_AUTH_RETRY_AT = time.monotonic() + 900
-                logging.warning("GMGN token/info authorization rejected; pausing this endpoint for 15 minutes (check API permissions)")
+                logging.warning("GMGN token/info HTTP %s: ranking authorization does not imply token/info permission; endpoint paused 15 minutes; check GMGN_API_KEY scope and endpoint entitlement (no secret logged)", exc.code)
             logging.warning("GMGN position quote HTTP %s for sol:%s; trying public fallback", exc.code, address[:8])
         except (URLError, TimeoutError, ValueError, TypeError) as exc:
             logging.warning("GMGN position quote %s for sol:%s; trying public fallback", type(exc).__name__, address[:8])
@@ -147,7 +147,7 @@ def fetch_token_price(chain: str, address: str) -> float | None:
             try:
                 price = float(pair.get("priceUsd"))
                 if 0 < price < 1e12:
-                    logging.info("PAPER PRICE source=dexscreener sol:%s pair=%s", address[:8], str(pair.get("pairAddress", ""))[:16])
+                    logging.info("PAPER PRICE source=dexscreener sol:%s pair=%s liquidity_usd=%s price_usd=%.12g (highest reported liquidity; indicative quote, not 1m candle close)", address[:8], str(pair.get("pairAddress", ""))[:16], (pair.get("liquidity") or {}).get("usd"), price)
                     return price
             except (ValueError, TypeError):
                 continue
