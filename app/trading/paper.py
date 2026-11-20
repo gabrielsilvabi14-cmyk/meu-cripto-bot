@@ -18,6 +18,9 @@ class Position:
     target_pct: float = 50.0
     last_mark_price: float | None = None
     last_mark_at: str | None = None
+    entry_score: float | None = None
+    migration_status: str = "nao_verificada"
+    migration_age_minutes: float | None = None
 
 @dataclass
 class PaperAccount:
@@ -70,7 +73,7 @@ class PaperAccount:
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
         pnl = proceeds - cost_basis
-        event = {"action": "PAPER_SELL", "exit_reason": getattr(pos, "_exit_reason", "manual"), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
+        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
