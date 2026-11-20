@@ -24,7 +24,8 @@ class Position:
     peak_price: float | None = None
     dynamic_stop_price: float | None = None
     previous_mark_price: float | None = None
-    exit_strategy: str = "adaptive_v1"
+    exit_strategy: str = "adaptive_v2"
+    last_market_signals: dict = field(default_factory=dict)
 
 @dataclass
 class PaperAccount:
@@ -77,11 +78,11 @@ class PaperAccount:
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
         pnl = proceeds - cost_basis
-        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "exit_strategy": pos.exit_strategy, "peak_price": pos.peak_price, "dynamic_stop_price": pos.dynamic_stop_price, "opened_at": pos.opened_at, "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
+        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "exit_strategy": pos.exit_strategy, "peak_price": pos.peak_price, "dynamic_stop_price": pos.dynamic_stop_price, "opened_at": pos.opened_at, "market_signals": pos.last_market_signals, "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
-    def evaluate_exit(self, token: str, price: float) -> dict | None:
+    def evaluate_exit(self, token: str, price: float, market: dict | None = None) -> dict | None:
         """Adaptive PAPER-only exit: protective floor plus profit-protecting trailing stop.
 
         No fixed take-profit ceiling. A missing price never triggers a sale.
@@ -89,6 +90,8 @@ class PaperAccount:
         """
         pos = self.positions[token]
         self._valid(price)
+        market = market or {}
+        pos.last_market_signals = {k: market[k] for k in ("source", "liquidity", "buy_volume_1m", "sell_volume_1m", "top10_ratio", "bundler_ratio", "insider_ratio") if market.get(k) is not None}
         previous = pos.last_mark_price
         pos.previous_mark_price = previous
         pos.last_mark_price = price
@@ -112,6 +115,14 @@ class PaperAccount:
         if gain_pct >= 15:
             floor = max(floor, pos.entry_price * 1.02)
         pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, floor)
+        buy_vol = market.get("buy_volume_1m")
+        sell_vol = market.get("sell_volume_1m")
+        liquidity = market.get("liquidity")
+        severe_selling = (isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol >= 3000 and sell_vol > max(buy_vol, 1) * 3)
+        liquidity_crisis = isinstance(liquidity, (int, float)) and liquidity < 5000
+        if liquidity_crisis or (severe_selling and gain_pct >= 5):
+            pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
+            return self.sell(token, price)
         if price <= pos.dynamic_stop_price:
             pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 12 else "adaptive_risk_stop"
             return self.sell(token, price)
