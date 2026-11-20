@@ -2471,7 +2471,15 @@ def telegram_command_loop():
 
 def main():
     load_state()
-    threading.Thread(target=telegram_command_loop, daemon=True).start()
+    # An embedded radar shares a Telegram bot with other deployments.
+    # Only one consumer may call getUpdates for a given bot token.
+    # Keep outbound alerts active; enable command polling explicitly on
+    # the designated owner with TELEGRAM_COMMAND_POLLING=1.
+    if os.getenv("TELEGRAM_COMMAND_POLLING", "0").strip() == "1":
+        threading.Thread(target=telegram_command_loop, daemon=True).start()
+        log.info("Paper Telegram command polling enabled (exclusive consumer required)")
+    else:
+        log.info("Paper Telegram command polling disabled; outbound alerts remain enabled")
     telegram_send(
         f"🤖 <b>RADAR SOLANA {VERSAO} ATIVO</b>\n"
         "🚀 Oportunidades recentes e 🔥 continuidade de alta\n"
