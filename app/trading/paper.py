@@ -21,6 +21,10 @@ class Position:
     entry_score: float | None = None
     migration_status: str = "nao_verificada"
     migration_age_minutes: float | None = None
+    peak_price: float | None = None
+    dynamic_stop_price: float | None = None
+    previous_mark_price: float | None = None
+    exit_strategy: str = "adaptive_v1"
 
 @dataclass
 class PaperAccount:
@@ -73,21 +77,47 @@ class PaperAccount:
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
         pnl = proceeds - cost_basis
-        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
+        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "exit_strategy": pos.exit_strategy, "peak_price": pos.peak_price, "dynamic_stop_price": pos.dynamic_stop_price, "opened_at": pos.opened_at, "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
     def evaluate_exit(self, token: str, price: float) -> dict | None:
-        """Evaluate configured price triggers using the latest available market observation."""
+        """Adaptive PAPER-only exit: protective floor plus profit-protecting trailing stop.
+
+        No fixed take-profit ceiling. A missing price never triggers a sale.
+        The protective stop never moves down, even after a drawdown.
+        """
         pos = self.positions[token]
         self._valid(price)
+        previous = pos.last_mark_price
+        pos.previous_mark_price = previous
         pos.last_mark_price = price
         pos.last_mark_at = datetime.now(timezone.utc).isoformat()
-        change_pct = (price / pos.entry_price - 1) * 100
-        if change_pct <= -pos.stop_pct:
-            pos._exit_reason = "stop_loss"
+        pos.peak_price = max(pos.peak_price or pos.entry_price, price)
+        gain_pct = (pos.peak_price / pos.entry_price - 1) * 100
+        score = pos.entry_score if pos.entry_score is not None else 60
+        # Cap downside risk; score influences profit protection, not loss tolerance.
+        hard_stop_pct = min(max(pos.stop_pct, 1.0), 15.0)
+        floor = pos.entry_price * (1 - hard_stop_pct / 100)
+        if gain_pct >= 50:
+            trail_pct = 10 if score >= 70 else 8
+        elif gain_pct >= 25:
+            trail_pct = 12 if score >= 70 else 10
+        elif gain_pct >= 12:
+            trail_pct = 13 if score >= 70 else 11
+        else:
+            trail_pct = None
+        if trail_pct is not None:
+            floor = max(floor, pos.peak_price * (1 - trail_pct / 100))
+        if gain_pct >= 15:
+            floor = max(floor, pos.entry_price * 1.02)
+        pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, floor)
+        if price <= pos.dynamic_stop_price:
+            pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 12 else "adaptive_risk_stop"
             return self.sell(token, price)
-        if change_pct >= pos.target_pct:
-            pos._exit_reason = "profit_target"
+        # Strong negative momentum after a significant gain: protect the run.
+        if (previous is not None and gain_pct >= 20
+                and price < previous * 0.90 and price < pos.peak_price * 0.90):
+            pos._exit_reason = "adaptive_momentum_exit"
             return self.sell(token, price)
         return None
