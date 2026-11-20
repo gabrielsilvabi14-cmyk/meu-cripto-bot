@@ -1815,7 +1815,24 @@ def run_radar(category, chain="sol"):
                 break
             # The Telegram message was accepted. Persist its paper signal before
             # registering the alert, and report any delivery failure explicitly.
-            record = {"chain":chain,"address":mint,"category":category,"score":score,
+            # Pool creation is not proof of Pump.fun migration. Only explicit
+            # migration timestamps are classified; never infer from token age.
+            migration_status = "nao_verificada"
+            migration_age_minutes = None
+            gmgn_data = pair.get("gmgn") or {}
+            for field in ("migration_timestamp", "migrated_at", "migration_time"):
+                raw = num(gmgn_data.get(field), default=None)
+                if raw is None or raw <= 0:
+                    continue
+                ts = raw / 1000 if raw > 1e11 else raw
+                age_min = (time.time() - ts) / 60
+                if -1 <= age_min <= 10:
+                    migration_status, migration_age_minutes = "confirmada_ate_10min", round(max(0, age_min), 2)
+                elif age_min > 10:
+                    migration_status, migration_age_minutes = "confirmada_mais_10min", round(age_min, 2)
+                break
+            log.info("PAPER MIGRATION EVIDENCE %s status=%s age_minutes=%s (creation age is not migration age)", mint[:8], migration_status, migration_age_minutes)
+            record = {"migration_status":migration_status,"migration_age_minutes":migration_age_minutes,"chain":chain,"address":mint,"category":category,"score":score,
                       "pumpfun_confirmed":chain=="sol" and pumpfun_origin(pair.get("gmgn") or {}),
                       "price":num(pair.get("priceUsd")),
                       "market_cap":num(pair.get("marketCap")),
