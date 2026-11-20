@@ -239,8 +239,6 @@ def signal_worker():
                             reason="rede não habilitada"
                         elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (60 < signal["score"] <= 100):
                             reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
-                        elif signal.get("pumpfun_confirmed") is not True:
-                            reason="origem Pump.fun não confirmada"
                         elif not price:
                             reason="preço inválido"
                         elif signal.get("migration_source") not in ("migration_explicit", "completed_pool_created_proxy"):
