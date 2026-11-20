@@ -136,15 +136,15 @@ $('capital-form').addEventListener('submit',async e=>{
 $('settings-form').addEventListener('submit',async e=>{
  e.preventDefault();
  const feedback=$('settings-feedback'),button=$('settings-submit');
- const values={operation_usd:Number($('operation-usd').value),stop_pct:Number($('stop-pct').value),target_pct:Number($('target-pct').value)};
- if(!Number.isFinite(values.operation_usd)||values.operation_usd<1||values.operation_usd>10000||!Number.isFinite(values.stop_pct)||values.stop_pct<0.1||values.stop_pct>95||!Number.isFinite(values.target_pct)||values.target_pct<1||values.target_pct>1000){
-  feedback.textContent='Confira os limites dos três campos.';return;
+ const values={operation_usd:Number($('operation-usd').value)};
+ if(!Number.isFinite(values.operation_usd)||values.operation_usd<1||values.operation_usd>10000){
+  feedback.textContent='Informe um valor entre US$ 1 e US$ 10.000.';return;
  }
  button.disabled=true;feedback.textContent='Salvando parâmetros...';
  try{
   const r=await fetch('/api/paper/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});
   const data=await r.json();if(!r.ok)throw Error(data.error||'Falha ao salvar');
-  feedback.textContent='Estratégia salva. Próximas operações usarão os novos valores.';
+  feedback.textContent='Valor salvo. Próximas compras usarão esse valor; saídas continuam automáticas.';
  }catch(err){feedback.textContent='Erro: '+err.message}
  finally{button.disabled=false}
 });
