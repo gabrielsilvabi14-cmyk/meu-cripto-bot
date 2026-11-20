@@ -1891,10 +1891,6 @@ def run_radar(category, chain="sol"):
             mint = (pair.get("baseToken") or {}).get("address")
             if not mint:
                 continue
-            if chain != "sol" or not pumpfun_origin(pair.get("gmgn") or {}):
-                rejections["origem_pumpfun_nao_confirmada"] = rejections.get("origem_pumpfun_nao_confirmada", 0) + 1
-                record_radar_rejection(pair, chain, category, "origem Pump.fun não confirmada")
-                continue
             if category == "new" and (
                 was_sent(f"{chain}:{mint}") or was_sent(mint)
                 or intelligence.recently_sent(chain, mint)
