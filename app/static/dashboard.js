@@ -30,7 +30,7 @@ function renderPosition(container,p,meta){
  const card=node('div','','position');
  card.append(node('strong',(p.symbol||t.symbol||p.name||'Token')+' · '+chain.toUpperCase()));
  contractLink(card,chain,address);
- const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',mc(p.current_market_cap)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-(p.stop_pct??12)/100))+' (estimado)':'—'],['Stop-loss',pct(-(p.stop_pct??12))],['Meta de lucro',pct(p.target_pct??50)],['Cotação',p.mark_is_stale?'⚠️ Desatualizada':'Atualizada']];
+ const fields=[['MC na entrada',mc(p.entry_market_cap)],['MC atual',mc(p.current_market_cap)],['Variação do preço',pct(p.change_pct)],['Resultado estimado',usd(p.unrealized_pnl_usd)],['Valor da posição',usd(p.estimated_value_usd)],['Stop de referência',p.entry_market_cap?mc(p.entry_market_cap*(1-(p.stop_pct??12)/100))+' (estimado)':'—'],['Stop-loss',pct(-(p.stop_pct??12))],['Meta de lucro',pct(p.target_pct??50)],['Cotação',p.mark_price==null?'⚠️ Indisponível':p.mark_is_stale?'⚠️ Desatualizada':'Atualizada']];
  const grid=node('div','','position-grid');
  for(const [k,v] of fields){const item=document.createElement('div');item.append(node('small',k),node('b',v, k==='Resultado estimado'&&typeof p.unrealized_pnl_usd==='number'?(p.unrealized_pnl_usd>=0?'positive':'negative'):''));grid.append(item)}
  card.append(grid);openButton(card,chain,address);container.append(card);
@@ -69,11 +69,23 @@ async function refresh(){
    if(typeof settings.stop_pct==='number')$('stop-pct').value=settings.stop_pct;
    if(typeof settings.target_pct==='number')$('target-pct').value=settings.target_pct;
   }
-  setValue('cash',usd(d.cash_usd));setValue('equity',usd(d.estimated_equity_usd));setValue('initial-capital',usd(d.initial_paper_capital_usd));
-  const pnl=typeof d.estimated_equity_usd==='number'?d.estimated_equity_usd-Number(d.initial_paper_capital_usd||100):null;
+  const initial=Number(d.initial_paper_capital_usd);
+  const missing=positions.filter(p=>p.estimated_value_usd==null||p.mark_is_stale);
+  const equityComplete=missing.length===0&&typeof d.estimated_equity_usd==='number';
+  const equity=equityComplete?d.estimated_equity_usd:null;
+  setValue('cash',usd(d.cash_usd));setValue('equity',usd(equity));setValue('initial-capital',usd(initial));setValue('status-initial-capital',usd(initial));
+  setValue('equity-note',missing.length?('⚠️ '+missing.length+' posição(ões) sem cotação atualizada; patrimônio não confiável'):'Inclui saldo e posições abertas');
+  const pnl=equity!==null&&Number.isFinite(initial)?equity-initial:null;
   setValue('pnl',usd(pnl));$('pnl').className='value '+(pnl===null?'':pnl>=0?'positive':'negative');
+  setValue('pnl-percent',pnl===null?'Indisponível até atualizar todas as cotações':pct(initial>0?pnl/initial*100:null)+' sobre capital inicial de '+usd(initial));
   setValue('position-count',positions.length);setValue('events',trades.length+' eventos');
   const closed=trades.filter(t=>t.action==='PAPER_SELL');setValue('closed-count',closed.length+' fechamentos');
+  const gains=closed.reduce((sum,t)=>sum+Math.max(0,Number(t.realized_pnl_usd)||0),0);
+  const losses=closed.reduce((sum,t)=>sum+Math.min(0,Number(t.realized_pnl_usd)||0),0);
+  const net=gains+losses;
+  setValue('closed-gains',usd(gains));setValue('closed-losses',usd(losses));setValue('closed-net',usd(net));
+  $('closed-net').className=net>=0?'positive':'negative';
+  setValue('closed-summary-note','Resumo das '+closed.length+' vendas disponíveis no histórico exibido; não inclui posições abertas.');
   const meta=new Map(tokens.map(t=>[t.chain+':'+t.address,t]));
   const pos=$('positions');pos.replaceChildren();positions.forEach(p=>renderPosition(pos,p,meta));
   if(!positions.length)pos.textContent='Nenhuma posição aberta no momento.';
