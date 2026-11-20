@@ -466,10 +466,7 @@ def discover(category, chain="sol"):
             "launchpad_platform_v2": True,
             "limit": 80,
         }
-        # Restore the original GMGN server-side Pump.fun launchpad filter.
-        # DEX/pool metadata is not used as the launch platform.
-        if chain == "sol":
-            section["launchpad_platform"] = ["Pump.fun"]
+        # Query all Solana launchpads; retain the completed-migration source.
         payload = {
             "version": "v2",
             **{token_type: dict(section) for token_type in types},
@@ -587,15 +584,6 @@ def discover(category, chain="sol"):
             ),
             reverse=True,
         )
-        # Prioritize confirmed Pump.fun candidates before filling the discovery cap.
-        # Unknown origin is not assumed to be Pump.fun.
-        if chain == "sol":
-            trench_volume_rows.sort(
-                key=lambda item: pumpfun_origin(item), reverse=True
-            )
-            trench_accel_rows.sort(
-                key=lambda item: pumpfun_origin(item), reverse=True
-            )
         trench_candidates = balanced_slice(
             trench_volume_rows, trench_accel_rows, MAX_CANDIDATOS
         )
@@ -1885,10 +1873,6 @@ def run_radar(category, chain="sol"):
 
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
-            if chain == "sol" and not pumpfun_origin(pair.get("gmgn") or {}):
-                reason = "origem Pump.fun não confirmada"
-                rejections[reason] = rejections.get(reason, 0) + 1
-                continue
             age=age_hours(pair)
             if age is None or not (5/60 <= age <= 24):
                 rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
@@ -1961,9 +1945,6 @@ def run_radar(category, chain="sol"):
             if was_sent(f"{chain}:{mint}") or was_sent(mint) or intelligence.recently_sent(chain, mint):
                 continue
             gmgn_audit_enrich(pair)
-            if chain == "sol" and not pumpfun_origin(pair.get("gmgn") or {}):
-                log.info("RADAR SKIP sol:%s origem Pump.fun não confirmada após auditoria", mint[:8])
-                continue
             try:
                 pair["whale_holders"] = gmgn_request(
                     "/v1/market/token_top_holders",
@@ -2450,7 +2431,7 @@ def main():
     load_state()
     threading.Thread(target=telegram_command_loop, daemon=True).start()
     telegram_send(
-        f"🤖 <b>RADAR SOLANA PUMP.FUN {VERSAO} ATIVO</b>\n"
+        f"🤖 <b>RADAR SOLANA {VERSAO} ATIVO</b>\n"
         "🚀 Oportunidades recentes e 🔥 continuidade de alta\n"
         "🛡️ Risco informativo e auditoria parcial\n"
         "🧪 Simulador de ordens GMGN disponível: /paper\n"
