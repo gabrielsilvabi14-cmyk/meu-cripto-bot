@@ -92,10 +92,7 @@ def eligible(t):
     age = t.get("age_hours")
     if not all((price, liquidity, volume)):
         return False
-    if t.get("chain") == "sol":
-        # No simulated SOL purchase until Pump.fun origin is verified.
-        return False
-    if t.get("chain") != "eth":
+    if t.get("chain") != "sol" or not pumpfun_confirmed(t):
         return False
     if liquidity < 20000 or volume < 30000 or volume / liquidity > 20:
         return False
@@ -240,16 +237,12 @@ def signal_worker():
                             reason="rede não habilitada"
                         elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (60 < signal["score"] <= 100):
                             reason="pontuação insuficiente ou inválida (exige acima de 60/100)"
+                        elif signal.get("pumpfun_confirmed") is not True:
+                            reason="origem Pump.fun não confirmada"
                         elif not price:
                             reason="preço inválido"
                         elif signal.get("migration_source") not in ("migration_explicit", "completed_pool_created_proxy"):
-                            reason="MIGRAÇÃO DESCONHECIDA: fonte de horário não verificada; compra bloqueada"
-                        elif not isinstance(signal.get("migration_timestamp"), (int, float)) or isinstance(signal.get("migration_timestamp"), bool):
-                            reason="MIGRAÇÃO DESCONHECIDA: timestamp ausente ou inválido; compra bloqueada"
-                        elif not (0 <= time.time()-float(signal["migration_timestamp"]) <= 600):
-                            reason=("MIGRAÇÃO ANTIGA: mais de 10 minutos desde " +
-                                    ("migração explícita" if signal["migration_source"]=="migration_explicit" else "criação do pool concluído (proxy)") +
-                                    "; compra bloqueada")
+                            reason="pool concluído não confirmado"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
