@@ -11,8 +11,6 @@ from urllib.request import Request, urlopen
 from gmgn_shared_limit import request_slot, note_rate_limit
 
 HOST = "https://openapi.gmgn.ai"
-# Avoid repeatedly hitting a private endpoint after authorization is rejected.
-_PRICE_AUTH_RETRY_AT = 0.0
 
 def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     if chain not in ("sol", "eth") or interval not in ("5m", "1h"):
@@ -97,64 +95,38 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
 
 
 def fetch_token_price(chain: str, address: str) -> float | None:
-    """Live price for paper exits: GMGN first, public Solana pair quote if GMGN fails."""
-    global _PRICE_AUTH_RETRY_AT
+    """Indicative DexScreener spot quote for 1-minute paper position monitoring.
+
+    GMGN remains the discovery/ranking source. No GMGN token/info requests
+    are made for exit prices; a missing DexScreener quote skips the mark.
+    """
     if chain != "sol" or not address:
         return None
-    key = os.environ.get("GMGN_API_KEY", "").strip()
-    if key and time.monotonic() >= _PRICE_AUTH_RETRY_AT:
-        query = urlencode({"chain": chain, "address": address})
-        req = Request(f"{HOST}/v1/token/info?{query}",
-                      headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1",
-                               "Accept": "application/json"})
-        try:
-            with request_slot():
-                with urlopen(req, timeout=12) as resp:
-                    result = json.load(resp)
-            if str(result.get("code", "0")) == "0":
-                data = result.get("data", result)
-                for node in (data, data.get("token") if isinstance(data, dict) else None,
-                             data.get("token_info") if isinstance(data, dict) else None,
-                             data.get("info") if isinstance(data, dict) else None):
-                    if isinstance(node, dict):
-                        for field in ("price", "price_usd", "priceUsd"):
-                            try:
-                                value = float(node.get(field))
-                                if 0 < value < 1e12:
-                                    return value
-                            except (TypeError, ValueError):
-                                pass
-        except HTTPError as exc:
-            if exc.code == 429:
-                note_rate_limit(exc.headers)
-            if exc.code in (401, 403):
-                _PRICE_AUTH_RETRY_AT = time.monotonic() + 900
-                logging.warning("GMGN token/info HTTP %s: ranking authorization does not imply token/info permission; endpoint paused 15 minutes; check GMGN_API_KEY scope and endpoint entitlement (no secret logged)", exc.code)
-            logging.warning("GMGN position quote HTTP %s for sol:%s; trying public fallback", exc.code, address[:8])
-        except (URLError, TimeoutError, ValueError, TypeError) as exc:
-            logging.warning("GMGN position quote %s for sol:%s; trying public fallback", type(exc).__name__, address[:8])
-    # Price-only fallback. Never substitute market cap or use quotes from another token.
     try:
         req = Request("https://api.dexscreener.com/latest/dex/tokens/" + address,
                       headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"})
         with urlopen(req, timeout=12) as resp:
             result = json.load(resp)
         pairs = [p for p in (result.get("pairs") or [])
-                 if p.get("chainId") == "solana"
+                 if isinstance(p, dict)
+                 and p.get("chainId") == "solana"
                  and str((p.get("baseToken") or {}).get("address", "")).lower() == address.lower()]
+        # Pick the pair with the highest reported USD liquidity for a consistent
+        # token-level mark; the quote is NOT a verified 1-minute candle close.
         pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
         for pair in pairs:
             try:
                 price = float(pair.get("priceUsd"))
                 if 0 < price < 1e12:
-                    logging.info("PAPER PRICE source=dexscreener sol:%s pair=%s liquidity_usd=%s price_usd=%.12g (highest reported liquidity; indicative quote, not 1m candle close)", address[:8], str(pair.get("pairAddress", ""))[:16], (pair.get("liquidity") or {}).get("usd"), price)
+                    logging.info("PAPER PRICE source=dexscreener sol:%s pair=%s liquidity_usd=%s price_usd=%.12g (indicative quote, not candle close)", address[:8], str(pair.get("pairAddress", ""))[:16], (pair.get("liquidity") or {}).get("usd"), price)
                     return price
             except (ValueError, TypeError):
                 continue
+        logging.warning("DexScreener quote missing for sol:%s; stop/target skipped for this minute", address[:8])
     except HTTPError as exc:
-        logging.warning("Public price fallback HTTP %s for sol:%s", exc.code, address[:8])
+        logging.warning("DexScreener quote HTTP %s for sol:%s; stop/target skipped for this minute", exc.code, address[:8])
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
-        logging.warning("Public price fallback %s for sol:%s", type(exc).__name__, address[:8])
+        logging.warning("DexScreener quote %s for sol:%s; stop/target skipped for this minute", type(exc).__name__, address[:8])
     return None
 
 
