@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap
+from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap, fetch_market_observation
 from app.trading.paper import PaperAccount
 from app.trading.adaptive import evaluate as evaluate_learning
 
@@ -160,14 +160,15 @@ def monitor_exits():
             for key in keys:
                 try:
                     chain, address = key.split(":", 1)
-                    price = valid_price(fetch_token_price(chain, address))
+                    observation = fetch_market_observation(chain, address)
+                    price = valid_price(observation.get("price")) if observation else None
                     if price is None:
-                        logging.warning("PAPER MARK unavailable %s; stop/target not evaluated", key)
+                        logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
                     with LOCK:
                         LAST_PRICES[key] = price
                         if key in ACCOUNT.positions:
-                            event = ACCOUNT.evaluate_exit(key, price)
+                            event = ACCOUNT.evaluate_exit(key, price, observation)
                             save()  # Persist adaptive trailing state on every observation.
                             if event:
                                 logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s entry=%s exit=%s exit_at=%s observed=%s score=%s migration=%s",
@@ -331,6 +332,7 @@ def status():
             p["stop_price"] = paper_pos.dynamic_stop_price or p["entry_price"] * (1 - min(paper_pos.stop_pct, 15.0) / 100)
             p["exit_strategy"] = paper_pos.exit_strategy
             p["peak_price"] = paper_pos.peak_price
+            p["market_signals"] = paper_pos.last_market_signals
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
