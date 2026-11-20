@@ -149,8 +149,19 @@ def poll():
 
 
 def monitor_exits():
-    """Poll open positions once per 60-second cycle, without holding the portfolio lock during HTTP."""
+    """Evaluate open positions just after each UTC one-minute candle boundary."""
+    last_minute = None
     while True:
+        # Wall-clock alignment: start just after xx:xx:00 UTC rather than
+        # 60 seconds after the previous network request completed.
+        now = time.time()
+        minute = int(now // 60)
+        if minute == last_minute:
+            time.sleep(max(0.05, min(1.0, (minute + 1) * 60 + 0.5 - now)))
+            continue
+        if now % 60 < 0.5:
+            time.sleep(0.5 - (now % 60))
+        last_minute = int(time.time() // 60)
         cycle_started = time.monotonic()
         try:
             with LOCK:
@@ -176,8 +187,10 @@ def monitor_exits():
         except Exception:
             logging.exception("PAPER EXIT monitor loop error")
         elapsed = time.monotonic() - cycle_started
-        logging.info("PAPER EXIT cycle finished positions=%s elapsed=%.1fs next_in=%.1fs", len(keys) if "keys" in locals() else 0, elapsed, max(0, 60 - elapsed))
-        time.sleep(max(0, 60 - elapsed))
+        next_boundary = (int(time.time() // 60) + 1) * 60 + 0.5
+        wait_seconds = max(0, next_boundary - time.time())
+        logging.info("PAPER EXIT candle-close cycle finished positions=%s elapsed=%.1fs next_in=%.1fs", len(keys) if "keys" in locals() else 0, elapsed, wait_seconds)
+        time.sleep(wait_seconds)
 
 
 
