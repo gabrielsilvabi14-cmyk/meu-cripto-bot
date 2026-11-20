@@ -25,6 +25,22 @@ function renderToken(container,t){
  const row=node('div','','token-row');row.append(node('strong',(t.symbol||t.name||'Token')+' · '+String(t.chain||'').toUpperCase()));
  contractLink(row,t.chain,t.address);openButton(row,t.chain,t.address);container.append(row);
 }
+function renderRadarDecision(container,d){
+ const [chain,address]=splitToken(d.token||'');
+ const row=node('div','','token-row');
+ row.append(node('strong',(d.symbol||'Token')+' · '+chain.toUpperCase()+' · '+(d.result==='comprado'?'Compra simulada':'Não comprado')));
+ const fields=[];
+ if(typeof d.score==='number')fields.push('Score: '+d.score+'/100');
+ if(typeof d.market_cap==='number')fields.push('MC: '+mc(d.market_cap));
+ if(typeof d.liquidity==='number')fields.push('Liquidez: '+usd(d.liquidity));
+ if(typeof d.migration_timestamp==='number'){
+  const age=(Date.now()/1000-d.migration_timestamp)/60;
+  fields.push(age>=0?'Migração há '+age.toFixed(1)+' min':'Horário de migração inconsistente');
+ }
+ row.append(node('small',fields.join(' · ')||'Dados de mercado indisponíveis'));
+ row.append(node('small',d.reason||'Motivo não informado'));
+ contractLink(row,chain,address);openButton(row,chain,address);container.append(row);
+}
 function renderPosition(container,p,meta){
  const [chain,address]=splitToken(p.token),t=meta.get(p.token)||{};
  const card=node('div','','position');
@@ -90,6 +106,15 @@ async function refresh(){
   if(!closed.length)closedBox.textContent='Nenhuma operação fechada até agora.';
   const history=$('trades');history.replaceChildren();trades.slice(-25).reverse().forEach(t=>renderTrade(history,t,meta));
   if(!trades.length)history.textContent='Nenhuma operação simulada.';
+  const decisionsData=d.paper_decisions||[];
+  const rejected=$('rejected-tokens');rejected.replaceChildren();
+  decisionsData.filter(x=>x.result!=='comprado').slice(-15).reverse().forEach(x=>renderRadarDecision(rejected,x));
+  if(!rejected.children.length)rejected.textContent='Nenhum sinal rejeitado registrado nesta execução. Rejeições internas do radar ainda não são enviadas ao painel.';
+  const recent=$('recent-migrations');recent.replaceChildren();
+  const now=Date.now()/1000;
+  decisionsData.filter(x=>x.result==='comprado'&&typeof x.migration_timestamp==='number'&&now-x.migration_timestamp>=0&&now-x.migration_timestamp<=600).slice(-15).reverse().forEach(x=>renderRadarDecision(recent,x));
+  if(!recent.children.length)recent.textContent='Nenhuma compra simulada registrada dentro da janela de 10 minutos. Tokens aprovados ainda não comprados não aparecem aqui.';
+  $('pre-migration').textContent='A consulta de pré-migração está ativa no radar, mas seus candidatos ainda não são transmitidos ao painel. Nenhuma compra é permitida antes da migração.';
   const list=$('tokens');list.replaceChildren();tokens.forEach(t=>renderToken(list,t));
   if(!tokens.length)list.textContent='Nenhum token recebido da GMGN.';
  }catch(e){setValue('connection','Falha ao consultar o painel');setValue('errors','Não foi possível atualizar os dados. Tente recarregar a página.')}
