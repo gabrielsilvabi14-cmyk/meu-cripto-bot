@@ -94,8 +94,21 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     return output
 
 
-def _gmgn_spot_price(chain: str, address: str) -> float | None:
-    """Get an explicit USD spot price from GMGN token/info, if available."""
+_GMGN_INFO_BACKOFF_UNTIL = 0.0
+_GMGN_INFO_WARNED = False
+
+def _number(value):
+    try:
+        result = float(value)
+        return result if 0 < result < 1e12 and result == result else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+def fetch_token_snapshot(chain: str, address: str) -> dict | None:
+    """Read-only Agent API token info; back off on auth errors to avoid hammering."""
+    global _GMGN_INFO_BACKOFF_UNTIL, _GMGN_INFO_WARNED
+    if chain != "sol" or not address or time.monotonic() < _GMGN_INFO_BACKOFF_UNTIL:
+        return None
     key = os.getenv("GMGN_API_KEY", "").strip()
     if not key:
         return None
@@ -106,35 +119,65 @@ def _gmgn_spot_price(chain: str, address: str) -> float | None:
             with urlopen(req, timeout=8) as resp:
                 payload = json.load(resp)
         if not isinstance(payload, dict) or str(payload.get("code", "0")) != "0":
+            logging.warning("GMGN token info returned non-success code")
             return None
         data = payload.get("data", payload)
         if not isinstance(data, dict):
             return None
-        for node in (data, data.get("token"), data.get("token_info"), data.get("info")):
-            if not isinstance(node, dict):
+        for candidate in (data, data.get("token"), data.get("token_info"), data.get("info")):
+            if not isinstance(candidate, dict):
                 continue
-            for field in ("price", "price_usd", "priceUsd", "usd_price"):
+            price_obj = candidate.get("price")
+            price = _number(price_obj.get("price")) if isinstance(price_obj, dict) else _number(price_obj)
+            if price is None:
+                price = _number(candidate.get("price_usd") or candidate.get("priceUsd"))
+            if price is None:
+                continue
+            stat = candidate.get("stat") if isinstance(candidate.get("stat"), dict) else {}
+            price_data = price_obj if isinstance(price_obj, dict) else {}
+            def ratio(field):
+                v = stat.get(field)
                 try:
-                    value = float(node.get(field))
-                    if 0 < value < 1e12:
-                        logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g (spot quote)", chain, address[:8], value)
-                        return value
-                except (TypeError, ValueError, OverflowError):
-                    pass
+                    f = float(v)
+                    return f if 0 <= f <= 1 else None
+                except (ValueError, TypeError, OverflowError):
+                    return None
+            result = {"price": price, "source": "gmgn",
+                      "liquidity": _number(candidate.get("liquidity")),
+                      "buy_volume_1m": _number(price_data.get("buy_volume_1m")),
+                      "sell_volume_1m": _number(price_data.get("sell_volume_1m")),
+                      "buys_1m": _number(price_data.get("buys_1m")),
+                      "sells_1m": _number(price_data.get("sells_1m")),
+                      "top10_ratio": ratio("top_10_holder_rate"),
+                      "bundler_ratio": ratio("top_bundler_trader_percentage"),
+                      "insider_ratio": ratio("top_rat_trader_percentage"),
+                      "dev_hold_ratio": ratio("dev_team_hold_rate"),
+                      "launchpad_status": candidate.get("launchpad_status")}
+            _GMGN_INFO_WARNED = False
+            logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g", chain, address[:8], price)
+            return result
     except HTTPError as exc:
         if exc.code == 429:
             note_rate_limit(exc.headers)
-        logging.warning("GMGN spot HTTP %s for %s:%s; trying fallback", exc.code, chain, address[:8])
+            _GMGN_INFO_BACKOFF_UNTIL = time.monotonic() + 120
+        elif exc.code in (401, 403):
+            _GMGN_INFO_BACKOFF_UNTIL = time.monotonic() + 600
+        if not _GMGN_INFO_WARNED:
+            logging.warning("GMGN token/info HTTP %s; fallback DexScreener, retry after cooldown (verify Agent API auth/permissions)", exc.code)
+            _GMGN_INFO_WARNED = True
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
-        logging.warning("GMGN spot %s for %s:%s; trying fallback", type(exc).__name__, chain, address[:8])
+        logging.warning("GMGN token/info %s; fallback", type(exc).__name__)
     return None
+
+def _gmgn_spot_price(chain: str, address: str) -> float | None:
+    snapshot = fetch_token_snapshot(chain, address)
+    return snapshot["price"] if snapshot else None
 
 
 def fetch_token_price(chain: str, address: str) -> float | None:
     """GMGN spot quote first, DexScreener spot quote as fallback.
 
-    GMGN remains the discovery/ranking source. No GMGN token/info requests
-    are made for exit prices; a missing DexScreener quote skips the mark.
+    Uses GMGN token/info first and falls back to DexScreener when unavailable.
     """
     if chain != "sol" or not address:
         return None
