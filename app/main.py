@@ -168,6 +168,7 @@ def monitor_exits():
                         LAST_PRICES[key] = price
                         if key in ACCOUNT.positions:
                             event = ACCOUNT.evaluate_exit(key, price)
+                            save()  # Persist adaptive trailing state on every observation.
                             if event:
                                 logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s entry=%s exit=%s exit_at=%s observed=%s score=%s migration=%s",
                                              key, event.get("exit_reason"), event.get("realized_pnl_usd"),
@@ -327,7 +328,9 @@ def status():
             paper_pos = ACCOUNT.positions[p["token"]]
             p["stop_pct"] = paper_pos.stop_pct
             p["target_pct"] = paper_pos.target_pct
-            p["stop_price"] = p["entry_price"] * (1 - paper_pos.stop_pct / 100)
+            p["stop_price"] = paper_pos.dynamic_stop_price or p["entry_price"] * (1 - min(paper_pos.stop_pct, 15.0) / 100)
+            p["exit_strategy"] = paper_pos.exit_strategy
+            p["peak_price"] = paper_pos.peak_price
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
