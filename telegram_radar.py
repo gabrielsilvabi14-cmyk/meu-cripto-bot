@@ -399,37 +399,35 @@ def gmgn_to_pair(row, category, info=None, chain="sol"):
     }
 
 
-def pumpfun_origin(data):
-    """Recognize Pump.fun launch origin without mistaking the trading pool for launchpad."""
+def pumpfun_origin_status(data):
+    """Classify launch origin from explicit GMGN metadata, never from pool DEX."""
     if not isinstance(data, dict):
-        return False
+        return "unknown"
     nodes = [data]
     for key in ("launchpad", "platform", "token", "token_info"):
         if isinstance(data.get(key), dict):
             nodes.append(data[key])
     fields = ("launchpad", "launchpad_name", "launchpad_platform",
               "launch_platform", "platform", "platform_name",
-              "creation_platform", "source_platform", "launchpad_platform_v2")
+              "creation_platform", "source_platform")
     seen_other = False
     for node in nodes:
         for key in fields:
             value = node.get(key)
             if isinstance(value, dict):
                 value = value.get("name") or value.get("platform") or value.get("id")
-            if isinstance(value, str):
-                normalized = "".join(ch for ch in value.lower() if ch.isalnum())
-                if normalized in ("pumpfun", "pump", "pumpfunv2"):
-                    return True
-                if normalized and normalized not in ("true", "false", "unknown", "none"):
-                    seen_other = True
-    if seen_other:
-        return False
-    # Pump.fun mint addresses commonly carry the 'pump' suffix. Accept this
-    # only when independently sourced from GMGN's completed-migration list;
-    # never use suffix alone or infer launch origin from exchange/DEX metadata.
-    mint = str(data.get("address") or data.get("token_address") or "")
-    return bool(data.get("radar_completed_source") is True
-                and mint.endswith("pump") and len(mint) >= 35)
+            if not isinstance(value, str):
+                continue
+            normalized = "".join(ch for ch in value.lower() if ch.isalnum())
+            if normalized in ("pumpfun", "pump", "pumpfunv2"):
+                return "confirmed"
+            if normalized and normalized not in ("true", "false", "unknown", "none"):
+                seen_other = True
+    return "other" if seen_other else "unknown"
+
+
+def pumpfun_origin(data):
+    return pumpfun_origin_status(data) == "confirmed"
 
 
 def gmgn_rank_rows(data):
@@ -1900,8 +1898,15 @@ def run_radar(category, chain="sol"):
 
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
+            origin_status = pumpfun_origin_status(pair.get("gmgn") or {})
+            if origin_status != "confirmed":
+                reason = ("origem_pumpfun_outra_plataforma" if origin_status == "other"
+                          else "origem_pumpfun_desconhecida")
+                rejections[reason] = rejections.get(reason, 0) + 1
+                record_radar_rejection(pair, chain, category, reason)
+                continue
             age=age_hours(pair)
-            if age is None or not (5/60 <= age <= 24):
+            if age is None or not (5/60 <= age <= 2):
                 rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
                 record_radar_rejection(pair, chain, category, "idade fora do intervalo permitido")
                 continue
@@ -1950,7 +1955,6 @@ def run_radar(category, chain="sol"):
                 rejections[reason] = rejections.get(reason, 0) + 1
                 record_radar_rejection(pair, chain, category, reason)
                 continue
-            stats["approved"] += 1
             if (was_sent(f"{chain}:{mint}") or was_sent(mint)
                     or intelligence.recently_sent(chain, mint)):
                 stats["duplicates"] += 1
@@ -1975,6 +1979,7 @@ def run_radar(category, chain="sol"):
             # Keep high-return setups, but prioritize actionable paper-entry windows.
             alert_priority = 1 if f.get("pattern_override") else 0
             approved.append((int(actionable), alert_priority, final_score, mint, pair, f))
+            stats["approved"] += 1
         approved.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         log.info("RADAR PAPER WINDOW %s/%s actionable=%d approved=%d",
                  chain, category, sum(item[0] for item in approved), len(approved))
