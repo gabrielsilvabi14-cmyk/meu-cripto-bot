@@ -94,14 +94,53 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     return output
 
 
+def _gmgn_spot_price(chain: str, address: str) -> float | None:
+    """Get an explicit USD spot price from GMGN token/info, if available."""
+    key = os.getenv("GMGN_API_KEY", "").strip()
+    if not key:
+        return None
+    req = Request(f"{HOST}/v1/token/info?" + urlencode({"chain": chain, "address": address}),
+                  headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1", "Accept": "application/json"})
+    try:
+        with request_slot():
+            with urlopen(req, timeout=8) as resp:
+                payload = json.load(resp)
+        if not isinstance(payload, dict) or str(payload.get("code", "0")) != "0":
+            return None
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            return None
+        for node in (data, data.get("token"), data.get("token_info"), data.get("info")):
+            if not isinstance(node, dict):
+                continue
+            for field in ("price", "price_usd", "priceUsd", "usd_price"):
+                try:
+                    value = float(node.get(field))
+                    if 0 < value < 1e12:
+                        logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g (spot quote)", chain, address[:8], value)
+                        return value
+                except (TypeError, ValueError, OverflowError):
+                    pass
+    except HTTPError as exc:
+        if exc.code == 429:
+            note_rate_limit(exc.headers)
+        logging.warning("GMGN spot HTTP %s for %s:%s; trying fallback", exc.code, chain, address[:8])
+    except (URLError, TimeoutError, ValueError, TypeError) as exc:
+        logging.warning("GMGN spot %s for %s:%s; trying fallback", type(exc).__name__, chain, address[:8])
+    return None
+
+
 def fetch_token_price(chain: str, address: str) -> float | None:
-    """Indicative DexScreener spot quote for 1-minute paper position monitoring.
+    """GMGN spot quote first, DexScreener spot quote as fallback.
 
     GMGN remains the discovery/ranking source. No GMGN token/info requests
     are made for exit prices; a missing DexScreener quote skips the mark.
     """
     if chain != "sol" or not address:
         return None
+    gmgn_price = _gmgn_spot_price(chain, address)
+    if gmgn_price is not None:
+        return gmgn_price
     try:
         req = Request("https://api.dexscreener.com/latest/dex/tokens/" + address,
                       headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"})
