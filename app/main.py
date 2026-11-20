@@ -150,49 +150,41 @@ def poll():
 
 
 def monitor_exits():
-    """Evaluate open positions just after each UTC one-minute candle boundary."""
-    last_minute = None
+    """Check live indicative spot prices repeatedly; no candle-close dependency."""
+    interval = 15.0
     while True:
-        # Wall-clock alignment: start just after xx:xx:00 UTC rather than
-        # 60 seconds after the previous network request completed.
-        now = time.time()
-        minute = int(now // 60)
-        if minute == last_minute:
-            time.sleep(max(0.05, min(1.0, (minute + 1) * 60 + 0.5 - now)))
-            continue
-        if now % 60 < 0.5:
-            time.sleep(0.5 - (now % 60))
-        last_minute = int(time.time() // 60)
         cycle_started = time.monotonic()
         try:
             with LOCK:
-                keys=list(ACCOUNT.positions)
+                keys = list(ACCOUNT.positions)
             for key in keys:
                 try:
-                    chain,address=key.split(":",1)
-                    price=valid_price(fetch_token_price(chain,address))
+                    chain, address = key.split(":", 1)
+                    price = valid_price(fetch_token_price(chain, address))
                     if price is None:
-                        logging.warning("PAPER MARK unavailable %s; stop/target not evaluated",key)
+                        logging.warning("PAPER MARK unavailable %s; stop/target not evaluated", key)
                         continue
                     with LOCK:
-                        LAST_PRICES[key]=price
+                        LAST_PRICES[key] = price
                         if key in ACCOUNT.positions:
-                            event=ACCOUNT.evaluate_exit(key,price)
+                            event = ACCOUNT.evaluate_exit(key, price)
                             if event:
-                                logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s entry=%s observed=%s stop_trigger=%s overshoot_pp=%s observed_at=%s score=%s migration=%s",
-                                             key,event.get("exit_reason"),event.get("realized_pnl_usd"),event.get("realized_pnl_pct"),event.get("entry_price"),event.get("observed_price"),event.get("stop_trigger_price"),event.get("stop_overshoot_pct_points"),event.get("observed_at"),event.get("entry_score"),event.get("migration_status"))
+                                logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s entry=%s exit=%s exit_at=%s observed=%s score=%s migration=%s",
+                                             key, event.get("exit_reason"), event.get("realized_pnl_usd"),
+                                             event.get("realized_pnl_pct"), event.get("entry_price"),
+                                             event.get("exit_price"), event.get("timestamp"),
+                                             event.get("observed_price"), event.get("entry_score"),
+                                             event.get("migration_status"))
                                 save()
                 except Exception:
-                    logging.exception("PAPER EXIT monitor error for %s",key)
-                time.sleep(1)
+                    logging.exception("PAPER EXIT monitor error for %s", key)
         except Exception:
             logging.exception("PAPER EXIT monitor loop error")
         elapsed = time.monotonic() - cycle_started
-        next_boundary = (int(time.time() // 60) + 1) * 60 + 0.5
-        wait_seconds = max(0, next_boundary - time.time())
-        logging.info("PAPER EXIT candle-close cycle finished positions=%s elapsed=%.1fs next_in=%.1fs", len(keys) if "keys" in locals() else 0, elapsed, wait_seconds)
+        wait_seconds = max(0, interval - elapsed)
+        logging.info("PAPER EXIT spot cycle finished positions=%s elapsed=%.1fs next_in=%.1fs",
+                     len(keys) if "keys" in locals() else 0, elapsed, wait_seconds)
         time.sleep(wait_seconds)
-
 
 
 def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status="nao_verificada",migration_age_minutes=None):
@@ -253,7 +245,7 @@ def signal_worker():
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
-                                logging.info("PAPER BUY from Telegram Radar %s: %s migration_status=%s migration_age_minutes=%s score=%s",key,event,signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
+                                logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
                                 save()
                             except (ValueError,KeyError) as exc:
                                 reason=str(exc)
