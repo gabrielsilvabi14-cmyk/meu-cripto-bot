@@ -151,7 +151,7 @@ def poll():
 
 def monitor_exits():
     """Check live indicative spot prices repeatedly; no candle-close dependency."""
-    interval = 15.0
+    interval = 60.0
     while True:
         cycle_started = time.monotonic()
         try:
