@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from collections import deque
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -34,6 +35,7 @@ PRICE_FAILURES = {}
 RADAR_PROCESS = None
 RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
 RADAR_SIGNAL_OFFSET = 0
+RADAR_REJECTIONS_FILE = Path(os.getenv("RADAR_REJECTIONS_FILE", "/tmp/gmgn_radar_rejections.jsonl"))
 SIGNAL_STATS = {"received":0,"bought":0,"skipped":0,"last_error":None,"last_signal":None}
 
 
@@ -313,6 +315,26 @@ def old_login_redirect():
 def home():
     return (BASE / "dashboard.html").read_text(encoding="utf-8")
 
+def recent_radar_rejections(limit=60):
+    """Read bounded recent per-token rejection events; ignore malformed lines."""
+    try:
+        with RADAR_REJECTIONS_FILE.open("r", encoding="utf-8") as journal:
+            lines = deque(journal, maxlen=400)
+        result = []
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+                if isinstance(entry, dict) and entry.get("address") and entry.get("reason"):
+                    result.append(entry)
+            except (ValueError, TypeError):
+                continue
+            if len(result) >= limit:
+                break
+        return result
+    except OSError:
+        return []
+
+
 @app.get("/api/status")
 def status():
     with LOCK:
@@ -350,7 +372,7 @@ def status():
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if equity is not None and len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events[-30:],
-                "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
+                "market": dict(MARKET), "radar_rejections": recent_radar_rejections(), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
 
 
