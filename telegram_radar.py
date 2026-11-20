@@ -460,13 +460,13 @@ def gmgn_signal_rows(data):
 
 def discover(category, chain="sol"):
     if category == "new":
-        types = ("completed",)
+        # Observe pre-migration candidates without ever treating them as migrated.
+        types = ("new_creation", "near_completion", "completed")
         section = {
             "filters": ["offchain", "onchain"],
             "launchpad_platform_v2": True,
             "limit": 80,
         }
-        # Query all Solana launchpads; retain the completed-migration source.
         payload = {
             "version": "v2",
             **{token_type: dict(section) for token_type in types},
@@ -475,7 +475,13 @@ def discover(category, chain="sol"):
             "/v1/trenches", method="POST",
             params={"chain": chain}, payload=payload
         )
-        trench_rows = gmgn_rows(data)
+        # Only completed-section tokens can enter the trading candidate list.
+        # Never infer completion from the union of all trench categories.
+        sections = data if isinstance(data, dict) else {}
+        completed_rows = gmgn_rows(sections.get("completed", {}))
+        early_rows = gmgn_rows(sections.get("new_creation", {})) + gmgn_rows(sections.get("near_completion", {}))
+        log.info("GMGN PRE-MIGRATION WATCH %s observed=%d completed=%d", chain, len(early_rows), len(completed_rows))
+        trench_rows = completed_rows
         trench_unique = {}
         for row in trench_rows:
             mint = row.get("address") or row.get("token_address")
