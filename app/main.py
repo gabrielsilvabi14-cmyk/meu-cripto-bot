@@ -243,6 +243,8 @@ def signal_worker():
                             reason="preço inválido"
                         elif signal.get("migration_source") not in ("migration_explicit", "completed_pool_created_proxy"):
                             reason="pool concluído não confirmado"
+                        elif not isinstance(signal.get("migration_timestamp"), (int, float)) or isinstance(signal.get("migration_timestamp"), bool) or not (0 <= time.time()-signal["migration_timestamp"] <= 600):
+                            reason="fora da janela de 10 minutos após migração ou horário não confirmado"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         else:
