@@ -178,8 +178,8 @@ def monitor_exits():
                         if key in ACCOUNT.positions:
                             event=ACCOUNT.evaluate_exit(key,price)
                             if event:
-                                logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s",
-                                             key,event.get("exit_reason"),event.get("realized_pnl_usd"),event.get("realized_pnl_pct"))
+                                logging.info("PAPER EXIT %s reason=%s pnl_usd=%s pnl_pct=%s entry=%s observed=%s stop_trigger=%s overshoot_pp=%s observed_at=%s score=%s migration=%s",
+                                             key,event.get("exit_reason"),event.get("realized_pnl_usd"),event.get("realized_pnl_pct"),event.get("entry_price"),event.get("observed_price"),event.get("stop_trigger_price"),event.get("stop_overshoot_pct_points"),event.get("observed_at"),event.get("entry_score"),event.get("migration_status"))
                                 save()
                 except Exception:
                     logging.exception("PAPER EXIT monitor error for %s",key)
@@ -194,7 +194,7 @@ def monitor_exits():
 
 
 
-def buy_every_alert(key,chain,price,market_cap=None):
+def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status="nao_verificada",migration_age_minutes=None):
     """Independent $20 paper position for each alerted token; virtual funding is explicit."""
     global INITIAL_CAPITAL
     from app.trading.paper import Position
@@ -208,7 +208,7 @@ def buy_every_alert(key,chain,price,market_cap=None):
         ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
-    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"])
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"],entry_score=score,migration_status=migration_status,migration_age_minutes=migration_age_minutes)
     event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
     ACCOUNT.events.append(event)
     return event
@@ -246,13 +246,13 @@ def signal_worker():
                             reason="posição já aberta"
                         else:
                             try:
-                                event=buy_every_alert(key,chain,price,valid_price(signal.get('market_cap')))
+                                event=buy_every_alert(key,chain,price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"))
                                 LAST_PRICES[key]=price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
                                 MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
-                                logging.info("PAPER BUY from Telegram Radar %s: %s",key,event)
+                                logging.info("PAPER BUY from Telegram Radar %s: %s migration_status=%s migration_age_minutes=%s score=%s",key,event,signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
                                 save()
                             except (ValueError,KeyError) as exc:
                                 reason=str(exc)
