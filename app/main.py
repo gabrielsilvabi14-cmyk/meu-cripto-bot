@@ -345,7 +345,7 @@ def status():
 
 @app.post("/api/paper/settings")
 async def update_paper_settings(request: Request):
-    """Update PAPER settings only; existing positions retain entry-time limits."""
+    """Update only the paper buy amount; adaptive exits are managed by the engine."""
     origin=request.headers.get("origin","")
     host=request.headers.get("host","")
     if not origin or origin not in ("https://"+host,"http://"+host):
@@ -357,17 +357,17 @@ async def update_paper_settings(request: Request):
     try:
         from math import isfinite
         data=await request.json()
-        settings={key:float(data[key]) for key in PAPER_SETTINGS}
+        settings={"operation_usd":float(data["operation_usd"])}
         if not all(isfinite(v) for v in settings.values()):
             raise ValueError()
-        if not (1<=settings["operation_usd"]<=10000 and 0.1<=settings["stop_pct"]<=95 and 1<=settings["target_pct"]<=1000):
+        if not (1<=settings["operation_usd"]<=10000):
             raise ValueError()
     except (ValueError,TypeError,KeyError,AttributeError):
-        return JSONResponse({"error":"Use valor US$ 1–10.000, stop 0,1–95% e meta 1–1.000%"},status_code=400)
+        return JSONResponse({"error":"Use valor por operação entre US$ 1 e US$ 10.000"},status_code=400)
     with LOCK:
         PAPER_SETTINGS.update(settings)
         save()
-    return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas operações usarão estes parâmetros; posições abertas não são alteradas."}
+    return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas compras usarão o valor definido; saídas permanecem automáticas."}
 
 @app.post("/api/paper/reset")
 async def reset_paper(request: Request):
