@@ -108,8 +108,14 @@ async function refresh(){
   if(!trades.length)history.textContent='Nenhuma operação simulada.';
   const decisionsData=d.paper_decisions||[];
   const rejected=$('rejected-tokens');rejected.replaceChildren();
-  decisionsData.filter(x=>x.result!=='comprado').slice(-15).reverse().forEach(x=>renderRadarDecision(rejected,x));
-  if(!rejected.children.length)rejected.textContent='Nenhum sinal rejeitado registrado nesta execução. Rejeições internas do radar ainda não são enviadas ao painel.';
+  const radarRejected=(d.radar_rejections||[]).map(x=>({
+    token:(x.chain||'sol')+':'+x.address, symbol:x.symbol, result:'ignorado',
+    reason:x.reason, score:x.score, market_cap:x.market_cap,
+    liquidity:x.liquidity, timestamp:x.timestamp
+  }));
+  const paperRejected=decisionsData.filter(x=>x.result!=='comprado');
+  [...radarRejected,...paperRejected].sort((a,b)=>(b.timestamp||0)-(a.timestamp||0)).slice(0,40).forEach(x=>renderRadarDecision(rejected,x));
+  if(!rejected.children.length)rejected.textContent='Nenhuma rejeição registrada nesta execução.';
   const recent=$('recent-migrations');recent.replaceChildren();
   const now=Date.now()/1000;
   decisionsData.filter(x=>x.result==='comprado'&&typeof x.migration_timestamp==='number'&&now-x.migration_timestamp>=0&&now-x.migration_timestamp<=600).slice(-15).reverse().forEach(x=>renderRadarDecision(recent,x));
