@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap, fetch_market_observation
 from app.trading.paper import PaperAccount
 from app.trading.adaptive import evaluate as evaluate_learning
+from app.integrations.candles import fetch_minute_candles, classify as classify_candles
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_url=None)
@@ -168,6 +169,9 @@ def monitor_exits():
                     if price is None:
                         logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
+                    candle_patterns = classify_candles(fetch_minute_candles(address)) if chain == 'sol' else []
+                    if candle_patterns:
+                        observation = dict(observation or {}, candle_patterns=candle_patterns)
                     with LOCK:
                         LAST_PRICES[key] = price
                         if key in ACCOUNT.positions:
@@ -192,7 +196,7 @@ def monitor_exits():
         time.sleep(wait_seconds)
 
 
-def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status="nao_verificada",migration_age_minutes=None):
+def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status="nao_verificada",migration_age_minutes=None,entry_patterns=None):
     """Independent $20 paper position for each alerted token; virtual funding is explicit."""
     from app.trading.paper import Position
     notional=PAPER_SETTINGS["operation_usd"]
@@ -203,8 +207,8 @@ def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status=
         raise ValueError("saldo fictício insuficiente; nenhuma compra ou depósito automático")
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
-    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"],entry_score=score,migration_status=migration_status,migration_age_minutes=migration_age_minutes)
-    event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"timestamp":datetime.now(timezone.utc).isoformat()}
+    ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"],entry_score=score,migration_status=migration_status,migration_age_minutes=migration_age_minutes,entry_patterns=list(entry_patterns or []))
+    event={"action":"PAPER_BUY","token":key,"network":chain,"notional_usd":notional,"fee_usd":fee,"entry_price":execution_price,"entry_patterns":list(entry_patterns or []),"timestamp":datetime.now(timezone.utc).isoformat()}
     ACCOUNT.events.append(event)
     return event
 
@@ -227,6 +231,9 @@ def signal_worker():
                     key=chain+":"+signal["address"]
                     price=valid_price(signal.get("price"))
                     liquidity=valid_price(signal.get("liquidity"))
+                    # External OHLCV request outside the account lock.
+                    entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
+                    entry_patterns = classify_candles(entry_candles)
                     reason=None
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
@@ -239,6 +246,8 @@ def signal_worker():
                             reason="preço inválido"
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
+                        elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
+                            reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
                         else:
                             try:
                                 event=buy_every_alert(key,chain,price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"))
