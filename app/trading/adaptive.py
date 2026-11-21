@@ -87,11 +87,13 @@ def analyze_patterns(events):
         basis = _finite(event.get("cost_basis_usd"))
         if pnl is None or basis is None or basis <= 0:
             continue
-        for pattern in event.get("observed_patterns", []) or []:
+        # Only entry-time candle patterns are usable for learning entry selection:
+        # post-entry patterns would leak future information.
+        for pattern in event.get("entry_patterns", []) or []:
             if not isinstance(pattern, str):
                 continue
             group = groups.setdefault(pattern, [])
             group.append({"return_pct": 100 * pnl / basis, "pnl_usd": pnl})
-    return {"status": "observational_not_validated", "source": "minute_spot_samples_not_ohlcv_candles",
+    return {"status": "observational_not_validated", "source": "completed_1m_ohlcv_entry_patterns",
             "patterns": {k: _stats(v) for k, v in groups.items()},
-            "note": "Padrões observados não comprovam causalidade; sem histórico de candles completos."}
+            "note": "Padrões na entrada, quando OHLCV disponível; resultados descritivos, sem previsão garantida."}
