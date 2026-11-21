@@ -81,9 +81,10 @@ async function refresh(){
   const equity=equityComplete?d.estimated_equity_usd:null;
   setValue('cash',usd(d.cash_usd));setValue('equity',usd(equity));setValue('initial-capital',usd(initial));setValue('status-initial-capital',usd(initial));
   setValue('equity-note',missing.length?('⚠️ '+missing.length+' posição(ões) sem cotação atualizada; patrimônio não confiável'):'Inclui saldo e posições abertas');
-  const pnl=equity!==null&&Number.isFinite(initial)?equity-initial:null;
+  const funding=Number(d.external_funding_usd)||0;
+  const pnl=equity!==null&&Number.isFinite(initial)?equity-initial-funding:null;
   setValue('pnl',usd(pnl));$('pnl').className='value '+(pnl===null?'':pnl>=0?'positive':'negative');
-  setValue('pnl-percent',pnl===null?'Indisponível até atualizar todas as cotações':pct(initial>0?pnl/initial*100:null)+' sobre capital inicial de '+usd(initial));
+  setValue('pnl-percent',pnl===null?'Indisponível até atualizar todas as cotações':pct(initial>0?pnl/initial*100:null)+' sobre capital inicial de '+usd(initial)+(funding>0?' (aportes automáticos antigos descontados: '+usd(funding)+')':''));
   setValue('position-count',positions.length);setValue('events',trades.length+' eventos');
   const closed=trades.filter(t=>t.action==='PAPER_SELL');setValue('closed-count',closed.length+' fechamentos');
   const gains=closed.reduce((sum,t)=>sum+Math.max(0,Number(t.realized_pnl_usd)||0),0);
@@ -96,7 +97,7 @@ async function refresh(){
   const pos=$('positions');pos.replaceChildren();positions.forEach(p=>renderPosition(pos,p,meta));
   if(!positions.length)pos.textContent='Nenhuma posição aberta no momento.';
   const closedBox=$('closed-trades');closedBox.replaceChildren();
-  for(const t of closed.slice(-30).reverse()){
+  for(const t of closed.slice().reverse()){
     const [chain,address]=splitToken(t.token);const known=meta.get(t.token)||{};const item=node('div','','token-row');
     item.append(node('strong',(known.symbol||'Token')+' · '+chain.toUpperCase()+' · '+(t.fraction===1?'Venda total':'Venda parcial')));
     const result=Number(t.realized_pnl_usd);const gain=Number.isFinite(result)&&result>=0;
@@ -106,7 +107,7 @@ async function refresh(){
     contractLink(item,chain,address);openButton(item,chain,address);closedBox.append(item);
   }
   if(!closed.length)closedBox.textContent='Nenhuma operação fechada até agora.';
-  const history=$('trades');history.replaceChildren();trades.slice(-25).reverse().forEach(t=>renderTrade(history,t,meta));
+  const history=$('trades');history.replaceChildren();trades.slice().reverse().forEach(t=>renderTrade(history,t,meta));
   if(!trades.length)history.textContent='Nenhuma operação simulada.';
   const list=$('tokens');list.replaceChildren();tokens.forEach(t=>renderToken(list,t));
   if(!tokens.length)list.textContent='Nenhum token recebido da GMGN.';
