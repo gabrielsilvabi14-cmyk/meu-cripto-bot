@@ -9,7 +9,7 @@ from math import isfinite
 MIN_GROUP = 12
 MIN_TOTAL = 40
 BASE_THRESHOLD = 60
-TIGHT_THRESHOLD = 70
+TIGHT_THRESHOLD = 80
 
 def _finite(value):
     try:
@@ -54,8 +54,8 @@ def evaluate(events):
     rows = [{"score": r["score"], "pnl_usd": r["pnl"],
              "return_pct": r["pnl"] / r["basis"] * 100}
             for r in by_token.values() if r["basis"] > 0]
-    low = [r for r in rows if BASE_THRESHOLD < r["score"] < TIGHT_THRESHOLD]
-    high = [r for r in rows if r["score"] >= TIGHT_THRESHOLD]
+    low = [r for r in rows if BASE_THRESHOLD < r["score"] <= TIGHT_THRESHOLD]
+    high = [r for r in rows if r["score"] > TIGHT_THRESHOLD]
     low_stats, high_stats = _stats(low), _stats(high)
     # Avoid reacting to a few random wins or losses. A meaningful difference
     # in both win rate and average net return is required.
@@ -65,11 +65,33 @@ def evaluate(events):
         high_stats["win_rate_pct"] >= low_stats["win_rate_pct"] + 10 and
         low_stats["average_return_pct"] < 0)
     threshold = TIGHT_THRESHOLD if higher_better else BASE_THRESHOLD
-    return {"mode": "adaptive" if higher_better else "collecting_or_baseline",
+    pattern_stats = analyze_patterns(events)
+    return {"pattern_learning": pattern_stats, "mode": "adaptive" if higher_better else "collecting_or_baseline",
             "minimum_score_exclusive": threshold,
             "trades_analyzed": len(rows), "minimum_trades_for_review": MIN_TOTAL,
-            "low_score_61_69": low_stats, "high_score_70_plus": high_stats,
-            "explanation": ("Histórico favorece pontuações >=70; limite elevado automaticamente."
+            "low_score_61_80": low_stats, "high_score_81_100": high_stats,
+            "explanation": ("Histórico favorece pontuações >80; limite elevado automaticamente."
                             if higher_better else
                             "Limite original >60 mantido até haver evidência suficiente e consistente."),
             "safety": "Somente PAPER; filtros de segurança existentes preservados."}
+
+def analyze_patterns(events):
+    """Descriptive PAPER-only outcomes by observed price/volume patterns.
+    Missing candle history is explicitly unclassified; never inferred.
+    """
+    groups = {}
+    for event in events:
+        if event.get("action") != "PAPER_SELL":
+            continue
+        pnl = _finite(event.get("realized_pnl_usd"))
+        basis = _finite(event.get("cost_basis_usd"))
+        if pnl is None or basis is None or basis <= 0:
+            continue
+        for pattern in event.get("observed_patterns", []) or []:
+            if not isinstance(pattern, str):
+                continue
+            group = groups.setdefault(pattern, [])
+            group.append({"return_pct": 100 * pnl / basis, "pnl_usd": pnl})
+    return {"status": "observational_not_validated", "source": "minute_spot_samples_not_ohlcv_candles",
+            "patterns": {k: _stats(v) for k, v in groups.items()},
+            "note": "Padrões observados não comprovam causalidade; sem histórico de candles completos."}
