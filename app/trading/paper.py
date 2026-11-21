@@ -120,16 +120,15 @@ class PaperAccount:
         liquidity = market.get("liquidity")
         severe_selling = (isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol >= 3000 and sell_vol > max(buy_vol, 1) * 3)
         liquidity_crisis = isinstance(liquidity, (int, float)) and liquidity < 5000
-        # Take half off after a meaningful rise; protect the remainder above entry.
-        # Partial sales are counted as separate closing events, not new trades.
+        if liquidity_crisis or (severe_selling and gain_pct >= 5):
+            pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
+            return self.sell(token, price)
+        # Realize part of a strong gain only if market risk is not already critical.
         if not pos.partial_taken and gain_pct >= 30 and price >= pos.entry_price * 1.20:
             pos.partial_taken = True
             pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, pos.entry_price * 1.05)
             pos._exit_reason = "adaptive_partial_profit"
             return self.sell(token, price, fraction=0.5)
-        if liquidity_crisis or (severe_selling and gain_pct >= 5):
-            pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
-            return self.sell(token, price)
         if price <= pos.dynamic_stop_price:
             pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 12 else "adaptive_risk_stop"
             return self.sell(token, price)
