@@ -24,7 +24,7 @@ BASE = Path(__file__).resolve().parent
 app.mount("/assets", StaticFiles(directory=BASE / "static"), name="assets")
 LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
-PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":12.0,"target_pct":50.0}
+PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":0.0,"target_pct":0.0}
 INITIAL_CAPITAL = 100.0
 EXTERNAL_FUNDING = 0.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
@@ -54,9 +54,8 @@ def restore():
         # Legacy snapshots increased initial_capital on automatic deposits.
         EXTERNAL_FUNDING = float(d.get("external_funding_usd", max(0.0, float(d.get("initial_capital", 100.0)) - 100.0)))
         INITIAL_CAPITAL = 100.0
-        for name in PAPER_SETTINGS:
-            if name in d.get("paper_settings",{}):
-                PAPER_SETTINGS[name] = float(d["paper_settings"][name])
+        if "operation_usd" in d.get("paper_settings", {}):
+            PAPER_SETTINGS["operation_usd"] = float(d["paper_settings"]["operation_usd"])
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
         ACCOUNT.events = d["events"]
@@ -212,6 +211,41 @@ def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status=
     ACCOUNT.events.append(event)
     return event
 
+def assess_paper_entry(signal, candles, observation):
+    """Require current, coherent market data and completed-candle confirmation."""
+    quote = valid_price((observation or {}).get("price"))
+    signal_price = valid_price(signal.get("price"))
+    liquidity = valid_price((observation or {}).get("liquidity"))
+    if not quote or not signal_price:
+        return None, "cotação atual indisponível; entrada adiada"
+    if abs(quote / signal_price - 1) > 0.12:
+        return None, "cotação mudou mais de 12% desde o sinal"
+    if liquidity is None or liquidity < 12000:
+        return None, "liquidez atual insuficiente ou não verificada (mínimo US$ 12 mil)"
+    if len(candles) < 8 or any(b["ts"] - a["ts"] != 60 for a, b in zip(candles[-8:], candles[-7:])):
+        return None, "histórico OHLCV de 8 velas fechadas indisponível"
+    recent = candles[-8:]
+    closes = [x["close"] for x in recent]
+    vols = [x["volume"] for x in recent]
+    if closes[-1] <= 0 or min(closes) <= 0:
+        return None, "velas com preços inválidos"
+    if abs(quote / closes[-1] - 1) > 0.18:
+        return None, "preço da pool OHLCV diverge da cotação atual"
+    if closes[-1] < closes[-3] or closes[-1] < closes[-2]:
+        return None, "momentum de curto prazo negativo"
+    if closes[-1] < max(x["high"] for x in recent) * 0.84:
+        return None, "recuo acentuado do pico recente"
+    if closes[-1] > closes[0] * 1.8 or closes[-1] > closes[-2] * 1.20:
+        return None, "alta explosiva; risco de entrada tardia"
+    if sum(vols[-3:]) < sum(vols[:3]) * 0.75:
+        return None, "volume recente enfraquecendo"
+    buy_vol = (observation or {}).get("buy_volume_1m")
+    sell_vol = (observation or {}).get("sell_volume_1m")
+    if isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol > max(buy_vol, 1) * 1.4:
+        return None, "pressão vendedora atual"
+    return quote, None
+
+
 def signal_worker():
     """Read Telegram-approved signals promptly and explain every paper decision."""
     global RADAR_SIGNAL_OFFSET
@@ -234,6 +268,8 @@ def signal_worker():
                     # External OHLCV request outside the account lock.
                     entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
                     entry_patterns = classify_candles(entry_candles)
+                    observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
+                    confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
                     reason=None
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
@@ -244,17 +280,19 @@ def signal_worker():
                             reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
                         elif not price:
                             reason="preço inválido"
+                        elif entry_issue:
+                            reason=entry_issue
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
                         elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
                             reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
                         else:
                             try:
-                                event=buy_every_alert(key,chain,price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"))
-                                LAST_PRICES[key]=price
+                                event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
+                                LAST_PRICES[key]=confirmed_price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar aprovado","timestamp":datetime.now(timezone.utc).isoformat()})
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
                                 logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
                                 save()
@@ -338,7 +376,7 @@ def status():
             paper_pos = ACCOUNT.positions[p["token"]]
             p["stop_pct"] = paper_pos.stop_pct
             p["target_pct"] = paper_pos.target_pct
-            p["stop_price"] = paper_pos.dynamic_stop_price or p["entry_price"] * (1 - min(paper_pos.stop_pct, 15.0) / 100)
+            p["stop_price"] = paper_pos.dynamic_stop_price
             p["exit_strategy"] = paper_pos.exit_strategy
             p["peak_price"] = paper_pos.peak_price
             p["market_signals"] = paper_pos.last_market_signals
