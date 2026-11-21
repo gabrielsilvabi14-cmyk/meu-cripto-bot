@@ -56,8 +56,8 @@ SELLS_MIN = 10
 BUY_RATIO_MIN = 1.15
 CHANGE_MIN = -15
 CHANGE_MAX = 80
-IDADE_NEW_MIN = 10 / 60
-IDADE_NEW_MAX = 3
+IDADE_NEW_MIN = 1 / 60
+IDADE_NEW_MAX = 4
 NEW_CHANGE_MIN = 3
 NEW_CHANGE_MAX = 65
 NEW_BUY_SHARE_MAX = 0.85
@@ -992,7 +992,7 @@ def filter_reason(pair, category):
 
     age = age_hours(pair)
     if age is None or not IDADE_NEW_MIN <= age <= IDADE_NEW_MAX:
-        return "idade fora de 10 minutos a 3 horas"
+        return "idade fora de 1 a 240 minutos"
     if not NEW_CHANGE_MIN <= change <= NEW_CHANGE_MAX:
         return "variação 1h fora do intervalo de tokens recentes"
 
@@ -1738,8 +1738,8 @@ def run_radar(category, chain="sol"):
             if category != "new" or not (pair.get("gmgn") or {}).get("radar_completed_source"):
                 continue
             age=age_hours(pair)
-            if age is None or not (5/60 <= age <= 2):
-                rejections["idade fora de 5 a 120 minutos"]=rejections.get("idade fora de 5 a 120 minutos",0)+1
+            if age is None or not (1/60 <= age <= 4):
+                rejections["idade fora de 1 a 240 minutos"]=rejections.get("idade fora de 1 a 240 minutos",0)+1
                 continue
             tx=(pair.get("txns") or {}).get("h1") or {}
             buys=num(tx.get("buys"),default=None)
