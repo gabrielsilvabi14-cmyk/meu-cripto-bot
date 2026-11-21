@@ -114,7 +114,7 @@ def poll():
             MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
         for chain in ("sol",):
             try:
-                found = fetch_rank(chain, limit=30)
+                found = fetch_rank(chain, limit=100)
                 tokens.extend(found)
                 chain_status[chain] = {"ok": True, "tokens": len(found)}
                 logging.info("GMGN %s returned %s tokens", chain, len(found))
@@ -126,7 +126,7 @@ def poll():
         with LOCK:
             MARKET.update(connected=bool(tokens), last_check=now, errors=errors,
                           chain_status=chain_status, phase=("monitorando" if tokens else "erro na integração"),
-                          tokens=tokens[:30], cycles=MARKET["cycles"] + 1)
+                          tokens=tokens[:100], cycles=MARKET["cycles"] + 1)
             if tokens:
                 MARKET["last_success"] = now
             current = {}
