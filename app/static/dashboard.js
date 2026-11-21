@@ -74,8 +74,6 @@ async function refresh(){
   const settings=d.paper_settings||{};
   if(!document.activeElement?.closest?.('#settings-form')){
    if(typeof settings.operation_usd==='number')$('operation-usd').value=settings.operation_usd;
-   if(typeof settings.stop_pct==='number')$('stop-pct').value=settings.stop_pct;
-   if(typeof settings.target_pct==='number')$('target-pct').value=settings.target_pct;
   }
   const initial=Number(d.initial_paper_capital_usd);
   const missing=positions.filter(p=>p.estimated_value_usd==null||p.mark_is_stale);
