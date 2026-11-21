@@ -19,7 +19,7 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
     if not key:
         raise RuntimeError("GMGN_API_KEY não configurada")
     query = urlencode({"chain": chain, "interval": interval, "order_by": "volume",
-                       "limit": min(limit, 30), "timestamp": int(time.time()),
+                       "limit": min(limit, 100), "timestamp": int(time.time()),
                        "client_id": str(uuid.uuid4())})
     req = Request(f"{HOST}/v1/market/rank?{query}",
                   headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1",
@@ -112,7 +112,7 @@ def fetch_token_snapshot(chain: str, address: str) -> dict | None:
     key = os.getenv("GMGN_API_KEY", "").strip()
     if not key:
         return None
-    req = Request(f"{HOST}/v1/token/info?" + urlencode({"chain": chain, "address": address}),
+    req = Request(f"{HOST}/v1/token/info?" + urlencode({"chain": chain, "address": address, "timestamp": int(time.time()), "client_id": str(uuid.uuid4())}),
                   headers={"X-APIKEY": key, "User-Agent": "gmgn-cli/1.7.1", "Accept": "application/json"})
     try:
         with request_slot():
@@ -235,7 +235,7 @@ def fetch_token_market_cap(chain: str, address: str) -> float | None:
     key=os.environ.get("GMGN_API_KEY","").strip()
     if not key:
         return None
-    req=Request(f"{HOST}/v1/token/info?"+urlencode({"chain":chain,"address":address}),headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
+    req=Request(f"{HOST}/v1/token/info?"+urlencode({"chain":chain,"address":address,"timestamp":int(time.time()),"client_id":str(uuid.uuid4())}),headers={"X-APIKEY":key,"User-Agent":"gmgn-cli/1.7.1","Accept":"application/json"})
     try:
         with request_slot():
             with urlopen(req,timeout=15) as resp:
