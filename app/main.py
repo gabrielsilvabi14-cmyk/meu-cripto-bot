@@ -25,6 +25,7 @@ LOCK = threading.RLock()
 ACCOUNT = PaperAccount()
 PAPER_SETTINGS = {"operation_usd":20.0,"stop_pct":12.0,"target_pct":50.0}
 INITIAL_CAPITAL = 100.0
+EXTERNAL_FUNDING = 0.0
 STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
@@ -48,22 +49,24 @@ def restore():
     try:
         from app.trading.paper import Position
         d = json.loads(STATE_FILE.read_text())
-        global INITIAL_CAPITAL
-        INITIAL_CAPITAL = float(d.get("initial_capital", 100.0))
+        global INITIAL_CAPITAL, EXTERNAL_FUNDING
+        # Legacy snapshots increased initial_capital on automatic deposits.
+        EXTERNAL_FUNDING = float(d.get("external_funding_usd", max(0.0, float(d.get("initial_capital", 100.0)) - 100.0)))
+        INITIAL_CAPITAL = 100.0
         for name in PAPER_SETTINGS:
             if name in d.get("paper_settings",{}):
                 PAPER_SETTINGS[name] = float(d["paper_settings"][name])
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
-        ACCOUNT.events = d["events"][-200:]
+        ACCOUNT.events = d["events"]
     except (OSError, ValueError, KeyError, TypeError):
         pass
 
 def save():
     from dataclasses import asdict
-    data = {"initial_capital": INITIAL_CAPITAL, "cash": ACCOUNT.cash_usd,
+    data = {"initial_capital": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING, "cash": ACCOUNT.cash_usd,
             "positions": {k: asdict(v) for k, v in ACCOUNT.positions.items()},
-            "events": ACCOUNT.events[-200:], "paper_settings":dict(PAPER_SETTINGS)}
+            "events": ACCOUNT.events, "paper_settings":dict(PAPER_SETTINGS)}
     try:
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(data))
@@ -191,16 +194,13 @@ def monitor_exits():
 
 def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status="nao_verificada",migration_age_minutes=None):
     """Independent $20 paper position for each alerted token; virtual funding is explicit."""
-    global INITIAL_CAPITAL
     from app.trading.paper import Position
     notional=PAPER_SETTINGS["operation_usd"]
     fee=notional*ACCOUNT.fee_pct/100
     required=notional+fee
-    if ACCOUNT.cash_usd<required:
-        added=round(required-ACCOUNT.cash_usd+20.0,2)
-        ACCOUNT.cash_usd+=added
-        INITIAL_CAPITAL+=added
-        ACCOUNT.events.append({"action":"PAPER_FUNDING","amount_usd":added,"reason":"fundos fictícios para cobrir todos os alertas","timestamp":datetime.now(timezone.utc).isoformat()})
+    # Never silently inject fictional funds. Starting balance remains US$100.
+    if ACCOUNT.cash_usd < required:
+        raise ValueError("saldo fictício insuficiente; nenhuma compra ou depósito automático")
     execution_price=price*(1+ACCOUNT.slippage_pct/100)
     ACCOUNT.cash_usd-=required
     ACCOUNT.positions[key]=Position(key,chain,notional/execution_price,execution_price,required,datetime.now(timezone.utc).isoformat(),entry_market_cap=market_cap,stop_pct=PAPER_SETTINGS["stop_pct"],target_pct=PAPER_SETTINGS["target_pct"],entry_score=score,migration_status=migration_status,migration_age_minutes=migration_age_minutes)
@@ -335,10 +335,10 @@ def status():
             p["market_signals"] = paper_pos.last_market_signals
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
                 "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL,
+                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
-                "positions": positions, "trades": ACCOUNT.events[-30:],
+                "positions": positions, "trades": ACCOUNT.events,
                 "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
 
@@ -372,7 +372,7 @@ async def update_paper_settings(request: Request):
 @app.post("/api/paper/reset")
 async def reset_paper(request: Request):
     """Confirmed reset of the public paper portfolio."""
-    global INITIAL_CAPITAL
+    global INITIAL_CAPITAL, EXTERNAL_FUNDING
     origin = request.headers.get("origin", "")
     host = request.headers.get("host", "")
     if not origin or origin not in ("https://" + host, "http://" + host):
@@ -386,12 +386,13 @@ async def reset_paper(request: Request):
         amount = float(payload.get("capital_usd"))
         confirmed = payload.get("confirm_reset") is True
         from math import isfinite
-        if not confirmed or not isfinite(amount) or amount < 10 or amount > 100000:
+        if not confirmed or not isfinite(amount) or amount != 100.0:
             raise ValueError("Capital inválido ou redefinição não confirmada")
     except (ValueError, TypeError, AttributeError):
-        return JSONResponse({"error": "Informe um capital entre US$ 10 e US$ 100.000 e confirme a redefinição"}, status_code=400)
+        return JSONResponse({"error": "O capital inicial é fixo em US$ 100; confirme a redefinição"}, status_code=400)
     with LOCK:
-        INITIAL_CAPITAL = round(amount, 2)
+        INITIAL_CAPITAL = 100.0
+        EXTERNAL_FUNDING = 0.0
         ACCOUNT.cash_usd = INITIAL_CAPITAL
         ACCOUNT.positions.clear()
         ACCOUNT.events.clear()
