@@ -28,6 +28,8 @@ class Position:
     last_market_signals: dict = field(default_factory=dict)
     price_samples: list = field(default_factory=list)
     observed_patterns: list = field(default_factory=list)
+    entry_patterns: list = field(default_factory=list)
+    candle_patterns: list = field(default_factory=list)
 
 @dataclass
 class PaperAccount:
@@ -80,7 +82,7 @@ class PaperAccount:
         if fraction == 1.0 or pos.quantity < 1e-12:
             del self.positions[token]
         pnl = proceeds - cost_basis
-        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "exit_strategy": pos.exit_strategy, "peak_price": pos.peak_price, "dynamic_stop_price": pos.dynamic_stop_price, "opened_at": pos.opened_at, "market_signals": pos.last_market_signals, "observed_patterns": list(pos.observed_patterns), "price_sample_count": len(pos.price_samples), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
+        event = {"action": "PAPER_SELL", "entry_score": pos.entry_score, "migration_status": pos.migration_status, "migration_age_minutes": pos.migration_age_minutes, "stop_config_pct": pos.stop_pct, "target_config_pct": pos.target_pct, "entry_price": pos.entry_price, "observed_price": price, "observed_at": pos.last_mark_at, "stop_trigger_price": pos.entry_price * (1 - pos.stop_pct / 100), "target_trigger_price": pos.entry_price * (1 + pos.target_pct / 100), "stop_overshoot_pct_points": round(max(0.0, (1 - price / pos.entry_price) * 100 - pos.stop_pct), 3) if getattr(pos, "_exit_reason", "") == "stop_loss" else 0.0, "exit_reason": getattr(pos, "_exit_reason", "manual"), "exit_strategy": pos.exit_strategy, "peak_price": pos.peak_price, "dynamic_stop_price": pos.dynamic_stop_price, "opened_at": pos.opened_at, "market_signals": pos.last_market_signals, "observed_patterns": list(pos.observed_patterns), "entry_patterns": list(pos.entry_patterns), "candle_patterns": list(pos.candle_patterns), "price_sample_count": len(pos.price_samples), "token": token, "network": pos.network, "fraction": fraction, "net_usd": round(proceeds, 4), "cost_basis_usd": round(cost_basis, 4), "realized_pnl_usd": round(pnl, 4), "realized_pnl_pct": round(pnl / cost_basis * 100, 2) if cost_basis else 0, "exit_price": price * (1 - self.slippage_pct / 100), "timestamp": datetime.now(timezone.utc).isoformat()}
         self.events.append(event)
         return event
 
@@ -94,6 +96,9 @@ class PaperAccount:
         self._valid(price)
         market = market or {}
         pos.last_market_signals = {k: market[k] for k in ("source", "liquidity", "buy_volume_1m", "sell_volume_1m", "top10_ratio", "bundler_ratio", "insider_ratio") if market.get(k) is not None}
+        for pattern in market.get("candle_patterns", []) or []:
+            if pattern not in pos.candle_patterns:
+                pos.candle_patterns.append(pattern)
         previous = pos.last_mark_price
         pos.previous_mark_price = previous
         pos.last_mark_price = price
