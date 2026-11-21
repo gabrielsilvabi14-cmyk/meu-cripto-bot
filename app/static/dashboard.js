@@ -51,7 +51,7 @@ async function refresh(){
   setValue('learning-count',String(learning.trades_analyzed??0)+' / '+String(learning.minimum_trades_for_review??40));
   setValue('learning-threshold','acima de '+String(learning.minimum_score_exclusive??60));
   setValue('learning-explanation',learning.explanation||'Coletando resultados de operações fechadas.');
-  const low=learning.low_score_61_69||{},high=learning.high_score_70_plus||{};
+  const low=learning.low_score_61_80||{},high=learning.high_score_81_100||{};
   setValue('learning-low',String(low.count??0)+' operações · '+(low.average_return_pct==null?'—':pct(low.average_return_pct))+' médio');
   setValue('learning-high',String(high.count??0)+' operações · '+(high.average_return_pct==null?'—':pct(high.average_return_pct))+' médio');
   const stats=d.signal_stats||{};
