@@ -45,7 +45,7 @@ JANELA_SAIDA_NEW = 30 * 60
 JANELAS_PROMOVIDOS = tuple(range(3 * 3600, 24 * 3600 + 1, 3 * 3600))
 TOLERANCIA_SAIDA_NEW = 2 * 60
 TOLERANCIA_PROMOVIDOS = 5 * 60
-MAX_CANDIDATOS = 60
+MAX_CANDIDATOS = 100
 MAX_ALERTAS = 3
 
 LIQ_MIN = 20000
@@ -448,7 +448,7 @@ def discover(category, chain="sol"):
         section = {
             "filters": ["offchain", "onchain"],
             "launchpad_platform_v2": True,
-            "limit": 80,
+            "limit": 100,
         }
         # SOL fica restrita à Pump.fun na própria consulta e é validada
         # novamente pelos metadados do token. ETH consulta as plataformas da rede.
