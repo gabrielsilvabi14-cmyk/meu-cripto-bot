@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+import random
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -11,8 +12,23 @@ HEADERS = {"Accept": "application/json;version=20230302", "User-Agent": "Mozilla
 
 def _get(url):
     req = Request(url, headers=HEADERS)
-    with urlopen(req, timeout=7) as response:
-        return json.load(response)
+    for attempt in range(3):
+        try:
+            with urlopen(req, timeout=7) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+            try:
+                delay = min(8.0, max(0.5, float(exc.headers.get("Retry-After"))))
+            except (ValueError, TypeError):
+                delay = 1.5 * (2 ** attempt)
+            logging.warning("OHLCV HTTP %s retry %s/2", exc.code, attempt + 1)
+            time.sleep(delay + random.uniform(0, 0.3))
+        except (URLError, TimeoutError):
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (2 ** attempt))
 
 def fetch_minute_candles(address, limit=40):
     """Returns [] on missing/invalid data; only completed minute candles."""
@@ -20,9 +36,10 @@ def fetch_minute_candles(address, limit=40):
         return []
     now = time.monotonic()
     cached = _CACHE.get(address)
-    if cached and now - cached[0] < 240:
+    if cached and now - cached[0] < (60 if cached[1] else 15):
         return cached[1]
     candles = []
+    failed = False
     try:
         data = _get(BASE + "/tokens/" + address + "/pools?page=1")
         pools = data.get("data", [])
@@ -47,8 +64,10 @@ def fetch_minute_candles(address, limit=40):
             candles.sort(key=lambda x: x["ts"])
             candles = candles[-limit:]
     except (HTTPError, URLError, TimeoutError, ValueError, TypeError, KeyError) as exc:
-        logging.info("OHLCV unavailable for %s (%s)", address[:8], type(exc).__name__)
-    _CACHE[address] = (now, candles)
+        failed = True
+        logging.warning("OHLCV unavailable token=%s error=%s status=%s", address[:8], type(exc).__name__, getattr(exc, "code", "n/a"))
+    if not failed:
+        _CACHE[address] = (time.monotonic(), candles)
     if len(_CACHE) > 400:
         _CACHE.clear()
     return candles
