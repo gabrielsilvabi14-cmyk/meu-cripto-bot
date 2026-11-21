@@ -24,7 +24,7 @@ class Position:
     peak_price: float | None = None
     dynamic_stop_price: float | None = None
     previous_mark_price: float | None = None
-    exit_strategy: str = "adaptive_v2"
+    exit_strategy: str = "adaptive_v3_dynamic"
     last_market_signals: dict = field(default_factory=dict)
     price_samples: list = field(default_factory=list)
     observed_patterns: list = field(default_factory=list)
@@ -127,38 +127,38 @@ class PaperAccount:
         pos.peak_price = max(pos.peak_price or pos.entry_price, price)
         gain_pct = (pos.peak_price / pos.entry_price - 1) * 100
         score = pos.entry_score if pos.entry_score is not None else 60
-        # Cap downside risk; score influences profit protection, not loss tolerance.
-        hard_stop_pct = min(max(pos.stop_pct, 1.0), 15.0)
-        floor = pos.entry_price * (1 - hard_stop_pct / 100)
-        if gain_pct >= 50:
-            trail_pct = 10 if score >= 70 else 8
-        elif gain_pct >= 25:
-            trail_pct = 12 if score >= 70 else 10
-        elif gain_pct >= 12:
-            trail_pct = 13 if score >= 70 else 11
-        else:
-            trail_pct = None
-        if trail_pct is not None:
-            floor = max(floor, pos.peak_price * (1 - trail_pct / 100))
-        if gain_pct >= 15:
-            floor = max(floor, pos.entry_price * 1.02)
+        # Volatility-sensitive risk floor, not a fixed -15% stop or +50% target.
+        # A gap can still execute well below the floor on the next available mark.
+        recent_prices = [x["price"] for x in samples[-7:]]
+        moves = [abs(recent_prices[i] / recent_prices[i-1] - 1)
+                 for i in range(1, len(recent_prices)) if recent_prices[i-1] > 0]
+        typical_move = sorted(moves)[len(moves)//2] if moves else 0.035
+        risk_band = min(0.14, max(0.045, typical_move * 2.5))
+        floor = pos.entry_price * (1 - risk_band)
+        if pos.peak_price > pos.entry_price * 1.06:
+            trail_band = min(0.16, max(0.05, typical_move * 2.2))
+            floor = max(floor, pos.peak_price * (1 - trail_band))
+        if pos.peak_price > pos.entry_price * 1.12:
+            floor = max(floor, pos.entry_price * 1.015)
         pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, floor)
         buy_vol = market.get("buy_volume_1m")
         sell_vol = market.get("sell_volume_1m")
         liquidity = market.get("liquidity")
         severe_selling = (isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol >= 3000 and sell_vol > max(buy_vol, 1) * 3)
         liquidity_crisis = isinstance(liquidity, (int, float)) and liquidity < 5000
-        if liquidity_crisis or (severe_selling and gain_pct >= 5):
+        if liquidity_crisis or severe_selling:
             pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
             return self.sell(token, price)
         # Realize part of a strong gain only if market risk is not already critical.
-        if not pos.partial_taken and gain_pct >= 30 and price >= pos.entry_price * 1.20:
+        if (not pos.partial_taken and gain_pct >= 10
+                and (severe_selling or (previous is not None and price < previous * 0.97)
+                     or (gain_pct >= 18 and price < pos.peak_price * 0.94))):
             pos.partial_taken = True
-            pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, pos.entry_price * 1.05)
+            pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, pos.entry_price * 1.01)
             pos._exit_reason = "adaptive_partial_profit"
             return self.sell(token, price, fraction=0.5)
         if price <= pos.dynamic_stop_price:
-            pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 12 else "adaptive_risk_stop"
+            pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 6 else "adaptive_risk_stop"
             return self.sell(token, price)
         # Strong negative momentum after a significant gain: protect the run.
         if (previous is not None and gain_pct >= 20
