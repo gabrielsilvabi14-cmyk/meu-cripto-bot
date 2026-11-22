@@ -207,8 +207,9 @@ def monitor_ohlcv():
                              chain, address[:8], len(candles), patterns, ohlcv_metrics())
         except Exception:
             logging.exception("OHLCV monitor failed")
-        # Wait for new minute-close, without polling every second.
-        time.sleep(max(0, 120 - (time.monotonic() - started)))
+        # Public OHLCV endpoint returned repeated 429s; sample observationally
+        # every 15 minutes instead of every 2 minutes. Paper trading is unchanged.
+        time.sleep(max(0, 900 - (time.monotonic() - started)))
 
 
 def monitor_exits():
