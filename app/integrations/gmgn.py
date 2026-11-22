@@ -171,7 +171,7 @@ def fetch_token_snapshot(chain: str, address: str) -> dict | None:
                       "dev_hold_ratio": ratio("dev_team_hold_rate"),
                       "launchpad_status": candidate.get("launchpad_status")}
             _GMGN_INFO_WARNED = False
-            logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g", chain, address[:8], price)
+            logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g", chain, chain, address[:8], price)
             return result
     except HTTPError as exc:
         if exc.code == 429:
@@ -192,7 +192,7 @@ def _gmgn_spot_price(chain: str, address: str) -> float | None:
 
 
 def _dexscreener_spot(chain: str, address: str) -> dict | None:
-    if chain != "sol":
+    if chain not in ("sol", "eth"):
         return None
     try:
         req = Request("https://api.dexscreener.com/latest/dex/tokens/" + address,
@@ -200,28 +200,28 @@ def _dexscreener_spot(chain: str, address: str) -> dict | None:
         with urlopen(req, timeout=8) as resp:
             result = json.load(resp)
         pairs = [p for p in (result.get("pairs") or [])
-                 if isinstance(p, dict) and p.get("chainId") == "solana"
+                 if isinstance(p, dict) and p.get("chainId") == ("ethereum" if chain == "eth" else "solana")
                  and str((p.get("baseToken") or {}).get("address", "")).lower() == address.lower()]
         pairs.sort(key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0), reverse=True)
         for pair in pairs:
             price = _number(pair.get("priceUsd"))
             if price is not None:
                 liquidity = _number((pair.get("liquidity") or {}).get("usd"))
-                logging.info("PAPER PRICE source=dexscreener sol:%s price_usd=%.12g liquidity_usd=%s", address[:8], price, liquidity)
+                logging.info("PAPER PRICE source=dexscreener %s:%s price_usd=%.12g liquidity_usd=%s", chain, address[:8], price, liquidity)
                 return {"price": price, "source": "dexscreener", "liquidity": liquidity}
     except HTTPError as exc:
-        logging.warning("DexScreener HTTP %s for sol:%s", exc.code, address[:8])
+        logging.warning("DexScreener HTTP %s for %s:%s", exc.code, chain, address[:8])
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
-        logging.warning("DexScreener %s for sol:%s", type(exc).__name__, address[:8])
+        logging.warning("DexScreener %s for %s:%s", type(exc).__name__, chain, chain, address[:8])
     return None
 
 
 def _geckoterminal_spot(chain: str, address: str) -> dict | None:
     """Independent Solana spot quote from GeckoTerminal's public token endpoint."""
-    if chain != "sol":
+    if chain not in ("sol", "eth"):
         return None
     try:
-        req = Request("https://api.geckoterminal.com/api/v2/networks/solana/tokens/" + address,
+        req = Request("https://api.geckoterminal.com/api/v2/networks/" + ("eth" if chain == "eth" else "solana") + "/tokens/" + address,
                       headers={"Accept": "application/json;version=20230302", "User-Agent": "Mozilla/5.0"})
         with urlopen(req, timeout=8) as resp:
             payload = json.load(resp)
@@ -231,7 +231,7 @@ def _geckoterminal_spot(chain: str, address: str) -> dict | None:
         attributes = token.get("attributes") or {}
         price = _number(attributes.get("price_usd"))
         if price is not None:
-            logging.info("PAPER PRICE source=geckoterminal sol:%s price_usd=%.12g", address[:8], price)
+            logging.info("PAPER PRICE source=geckoterminal %s:%s price_usd=%.12g", address[:8], price)
             return {"price": price, "source": "geckoterminal"}
     except HTTPError as exc:
         logging.warning("GeckoTerminal HTTP %s for sol:%s", exc.code, address[:8])
@@ -278,11 +278,11 @@ def fetch_token_market_cap(chain: str, address: str) -> float | None:
 
 def fetch_market_observation(chain: str, address: str) -> dict | None:
     """GMGN Agent API first, DexScreener second, GeckoTerminal third."""
-    if chain != "sol" or not address:
+    if chain not in ("sol", "eth") or not address:
         return None
     for source in (fetch_token_snapshot, _dexscreener_spot, _geckoterminal_spot):
         result = source(chain, address)
         if result is not None and _number(result.get("price")) is not None:
             return result
-    logging.error("PAPER PRICE ALL SOURCES FAILED sol:%s; no synthetic exit price", address[:8])
+    logging.error("PAPER PRICE ALL SOURCES FAILED %s:%s; no synthetic exit price", address[:8])
     return None
