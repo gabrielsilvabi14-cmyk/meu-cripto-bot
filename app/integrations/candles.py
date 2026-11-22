@@ -75,7 +75,7 @@ def fetch_minute_candles(address, limit=40):
                     _POOL_CACHE[address] = (time.monotonic(), pool_id)
         if pool_id:
             from urllib.parse import quote
-            url = BASE + "/pools/" + quote(pool_id, safe="") + "/ohlcv/minute?aggregate=1&limit=" + str(min(max(int(limit), 5), 100))
+            url = BASE + "/pools/" + quote(pool_id, safe="") + "/ohlcv/minute?aggregate=1&token=" + quote(address, safe="") + "&limit=" + str(min(max(int(limit), 5), 100))
             raw = _get(url).get("data", {}).get("attributes", {}).get("ohlcv_list", [])
             current_minute = int(time.time() // 60) * 60
             for row in raw:
@@ -91,6 +91,9 @@ def fetch_minute_candles(address, limit=40):
                 candles.append({"ts": ts, "open": o, "high": h, "low": l, "close": c, "volume": v})
             candles.sort(key=lambda x: x["ts"])
             candles = candles[-limit:]
+            if candles and current_minute - candles[-1]["ts"] > 180:
+                logging.warning("OHLCV stale token=%s last_candle_age_s=%s", address[:8], current_minute - candles[-1]["ts"])
+                candles = []
     except (HTTPError, URLError, TimeoutError, ValueError, TypeError, KeyError, RateLimited) as exc:
         failed = True
         logging.warning("OHLCV unavailable token=%s error=%s status=%s", address[:8], type(exc).__name__, getattr(exc, "code", "n/a"))
