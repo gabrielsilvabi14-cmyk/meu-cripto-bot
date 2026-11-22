@@ -407,136 +407,136 @@ def signal_worker():
         time.sleep(2)
 
 @app.on_event("startup")
-    def startup():
-        global RADAR_PROCESS
-        if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
-            env=dict(os.environ)
-            env["RADAR_EMBEDDED"]="1"
-            RADAR_PROCESS=subprocess.Popen([sys.executable,str(BASE.parent/"telegram_radar.py")],env=env)
-        else:
-            logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
-        threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
-        threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
-        threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
-        threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
+def startup():
+    global RADAR_PROCESS
+    if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
+        env=dict(os.environ)
+        env["RADAR_EMBEDDED"]="1"
+        RADAR_PROCESS=subprocess.Popen([sys.executable,str(BASE.parent/"telegram_radar.py")],env=env)
+    else:
+        logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
+    threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
+    threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
+    threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
+    threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
 
-    @app.middleware("http")
-    async def headers(request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
-        return response
+@app.middleware("http")
+async def headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+    return response
 
-    @app.head("/")
-    def root_head():
-        return Response(status_code=200)
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
 
-    @app.get("/health")
-    def health():
-        return {"status": "online", "mode": "paper", "real_trading": False}
+@app.get("/health")
+def health():
+    return {"status": "online", "mode": "paper", "real_trading": False}
 
-    @app.get("/login")
-    def old_login_redirect():
-        return RedirectResponse("/", status_code=303)
+@app.get("/login")
+def old_login_redirect():
+    return RedirectResponse("/", status_code=303)
 
-    @app.get("/", response_class=HTMLResponse)
-    def home():
-        return (BASE / "dashboard.html").read_text(encoding="utf-8")
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return (BASE / "dashboard.html").read_text(encoding="utf-8")
 
-    @app.get("/api/status")
-    def status():
-        with LOCK:
-            positions = []
-            equity = ACCOUNT.cash_usd
-            for key, p in ACCOUNT.positions.items():
-                mark = LAST_PRICES.get(key)
-                value = p.quantity * mark * (1-ACCOUNT.slippage_pct/100) * (1-ACCOUNT.fee_pct/100) if mark else None
-                if value is not None:
-                    equity += value
-                positions.append({"token": key, "network": p.network, "quantity": p.quantity,
-                                  "entry_price": p.entry_price, "mark_price": mark,
-                                  "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
-                                  "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
-                                  "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
-            token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
-            for p in positions:
-                p.update(token_meta.get(p["token"], {}))
-                if p["mark_price"] and p["entry_price"]:
-                    p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
-                    p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
-                paper_pos = ACCOUNT.positions[p["token"]]
-                p["stop_pct"] = paper_pos.stop_pct
-                p["target_pct"] = paper_pos.target_pct
-                p["stop_price"] = paper_pos.dynamic_stop_price
-                p["exit_strategy"] = paper_pos.exit_strategy
-                p["peak_price"] = paper_pos.peak_price
-                p["market_signals"] = paper_pos.last_market_signals
-            return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
-                    "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                    "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
-                    "cash_usd": round(ACCOUNT.cash_usd, 4),
-                    "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
-                    "positions": positions, "trades": ACCOUNT.events,
-                    "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
+@app.get("/api/status")
+def status():
+    with LOCK:
+        positions = []
+        equity = ACCOUNT.cash_usd
+        for key, p in ACCOUNT.positions.items():
+            mark = LAST_PRICES.get(key)
+            value = p.quantity * mark * (1-ACCOUNT.slippage_pct/100) * (1-ACCOUNT.fee_pct/100) if mark else None
+            if value is not None:
+                equity += value
+            positions.append({"token": key, "network": p.network, "quantity": p.quantity,
+                              "entry_price": p.entry_price, "mark_price": mark,
+                              "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
+                              "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
+                              "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
+        token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
+        for p in positions:
+            p.update(token_meta.get(p["token"], {}))
+            if p["mark_price"] and p["entry_price"]:
+                p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
+                p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
+            paper_pos = ACCOUNT.positions[p["token"]]
+            p["stop_pct"] = paper_pos.stop_pct
+            p["target_pct"] = paper_pos.target_pct
+            p["stop_price"] = paper_pos.dynamic_stop_price
+            p["exit_strategy"] = paper_pos.exit_strategy
+            p["peak_price"] = paper_pos.peak_price
+            p["market_signals"] = paper_pos.last_market_signals
+        return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
+                "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
+                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
+                "cash_usd": round(ACCOUNT.cash_usd, 4),
+                "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
+                "positions": positions, "trades": ACCOUNT.events,
+                "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
+                "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
 
 
-    @app.post("/api/paper/settings")
-    async def update_paper_settings(request: Request):
-        """Update only the paper buy amount; adaptive exits are managed by the engine."""
-        origin=request.headers.get("origin","")
-        host=request.headers.get("host","")
-        if not origin or origin not in ("https://"+host,"http://"+host):
-            return JSONResponse({"error":"Origem não autorizada"},status_code=403)
-        if request.headers.get("content-type","").split(";")[0].strip()!="application/json":
-            return JSONResponse({"error":"JSON obrigatório"},status_code=415)
-        if int(request.headers.get("content-length") or "0")>1024:
-            return JSONResponse({"error":"Dados muito grandes"},status_code=413)
-        try:
-            from math import isfinite
-            data=await request.json()
-            settings={"operation_usd":float(data["operation_usd"])}
-            if not all(isfinite(v) for v in settings.values()):
-                raise ValueError()
-            if not (1<=settings["operation_usd"]<=10000):
-                raise ValueError()
-        except (ValueError,TypeError,KeyError,AttributeError):
-            return JSONResponse({"error":"Use valor por operação entre US$ 1 e US$ 10.000"},status_code=400)
-        with LOCK:
-            PAPER_SETTINGS.update(settings)
-            save()
-        return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas compras usarão o valor definido; saídas permanecem automáticas."}
+@app.post("/api/paper/settings")
+async def update_paper_settings(request: Request):
+    """Update only the paper buy amount; adaptive exits are managed by the engine."""
+    origin=request.headers.get("origin","")
+    host=request.headers.get("host","")
+    if not origin or origin not in ("https://"+host,"http://"+host):
+        return JSONResponse({"error":"Origem não autorizada"},status_code=403)
+    if request.headers.get("content-type","").split(";")[0].strip()!="application/json":
+        return JSONResponse({"error":"JSON obrigatório"},status_code=415)
+    if int(request.headers.get("content-length") or "0")>1024:
+        return JSONResponse({"error":"Dados muito grandes"},status_code=413)
+    try:
+        from math import isfinite
+        data=await request.json()
+        settings={"operation_usd":float(data["operation_usd"])}
+        if not all(isfinite(v) for v in settings.values()):
+            raise ValueError()
+        if not (1<=settings["operation_usd"]<=10000):
+            raise ValueError()
+    except (ValueError,TypeError,KeyError,AttributeError):
+        return JSONResponse({"error":"Use valor por operação entre US$ 1 e US$ 10.000"},status_code=400)
+    with LOCK:
+        PAPER_SETTINGS.update(settings)
+        save()
+    return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas compras usarão o valor definido; saídas permanecem automáticas."}
 
-    @app.post("/api/paper/reset")
-    async def reset_paper(request: Request):
-        """Confirmed reset of the public paper portfolio."""
-        global INITIAL_CAPITAL, EXTERNAL_FUNDING
-        origin = request.headers.get("origin", "")
-        host = request.headers.get("host", "")
-        if not origin or origin not in ("https://" + host, "http://" + host):
-            return JSONResponse({"error": "Origem não autorizada"}, status_code=403)
-        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
-            return JSONResponse({"error": "JSON obrigatório"}, status_code=415)
-        if int(request.headers.get("content-length") or "0") > 1024:
-            return JSONResponse({"error": "Dados muito grandes"}, status_code=413)
-        try:
-            payload = await request.json()
-            amount = float(payload.get("capital_usd"))
-            confirmed = payload.get("confirm_reset") is True
-            from math import isfinite
-            if not confirmed or not isfinite(amount) or amount != 100.0:
-                raise ValueError("Capital inválido ou redefinição não confirmada")
-        except (ValueError, TypeError, AttributeError):
-            return JSONResponse({"error": "O capital inicial é fixo em US$ 100; confirme a redefinição"}, status_code=400)
-        with LOCK:
-            INITIAL_CAPITAL = 100.0
-            EXTERNAL_FUNDING = 0.0
-            ACCOUNT.cash_usd = INITIAL_CAPITAL
-            ACCOUNT.positions.clear()
-            ACCOUNT.events.clear()
-            save()
-        return {"ok": True, "initial_paper_capital_usd": INITIAL_CAPITAL,
-                "notice": "Carteira fictícia reiniciada; operações anteriores apagadas"}
+@app.post("/api/paper/reset")
+async def reset_paper(request: Request):
+    """Confirmed reset of the public paper portfolio."""
+    global INITIAL_CAPITAL, EXTERNAL_FUNDING
+    origin = request.headers.get("origin", "")
+    host = request.headers.get("host", "")
+    if not origin or origin not in ("https://" + host, "http://" + host):
+        return JSONResponse({"error": "Origem não autorizada"}, status_code=403)
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        return JSONResponse({"error": "JSON obrigatório"}, status_code=415)
+    if int(request.headers.get("content-length") or "0") > 1024:
+        return JSONResponse({"error": "Dados muito grandes"}, status_code=413)
+    try:
+        payload = await request.json()
+        amount = float(payload.get("capital_usd"))
+        confirmed = payload.get("confirm_reset") is True
+        from math import isfinite
+        if not confirmed or not isfinite(amount) or amount != 100.0:
+            raise ValueError("Capital inválido ou redefinição não confirmada")
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse({"error": "O capital inicial é fixo em US$ 100; confirme a redefinição"}, status_code=400)
+    with LOCK:
+        INITIAL_CAPITAL = 100.0
+        EXTERNAL_FUNDING = 0.0
+        ACCOUNT.cash_usd = INITIAL_CAPITAL
+        ACCOUNT.positions.clear()
+        ACCOUNT.events.clear()
+        save()
+    return {"ok": True, "initial_paper_capital_usd": INITIAL_CAPITAL,
+            "notice": "Carteira fictícia reiniciada; operações anteriores apagadas"}
