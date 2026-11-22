@@ -272,271 +272,271 @@ def swing_week_worker():
                     if origin not in ("pump.fun", "pumpfun", "pump_fun"):
                         logging.info("SWING7 INFO %s:%s pumpfun_origin_unverified status=%s; paper evaluation continues", chain, address[:8], origin[:32])
                     audit = snapshot or {}
-                for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio"):
-                    value = audit.get(metric)
-                    logging.info("SWING7 AUDIT %s:%s %s=%s", chain, address[:8], metric, "not_verified" if value is None else "%.2f%%" % (value * 100))
-                blocked = [metric for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio") if audit.get(metric) is None or audit[metric] >= 0.50]
-                if blocked:
-                    logging.info("SWING7 SKIP %s:%s audit_missing_or_ge_50pct=%s", chain, address[:8], ",".join(blocked))
-                    continue
-                liquidity = valid_price((snapshot or {}).get("liquidity"))
-                    price = valid_price((snapshot or {}).get("price"))
-                    if not liquidity or liquidity < 20000 or not price:
-                        logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable", address[:8])
+                    for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio"):
+                        value = audit.get(metric)
+                        logging.info("SWING7 AUDIT %s:%s %s=%s", chain, address[:8], metric, "not_verified" if value is None else "%.2f%%" % (value * 100))
+                    blocked = [metric for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio") if audit.get(metric) is None or audit[metric] >= 0.50]
+                    if blocked:
+                        logging.info("SWING7 SKIP %s:%s audit_missing_or_ge_50pct=%s", chain, address[:8], ",".join(blocked))
                         continue
-                    candles = fetch_minute_candles(address, chain=chain)
-                    patterns = classify_candles(candles)
-                    signal = {"price": price}
-                    quote, issue = assess_paper_entry(signal, candles, snapshot)
-                    reversal = "reversao_apos_queda" in patterns
-                    positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
-                    if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
-                        logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s", chain, address[:8], issue or "no_positive_pattern", patterns)
-                        continue
-                    qualified += 1
-                    score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
-                    key = chain + ":" + address
-                    with LOCK:
-                        if key in ACCOUNT.positions:
-                            logging.info("SWING7 SKIP %s position_already_open", key)
+                    liquidity = valid_price((snapshot or {}).get("liquidity"))
+                        price = valid_price((snapshot or {}).get("price"))
+                        if not liquidity or liquidity < 20000 or not price:
+                            logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable", address[:8])
                             continue
-                        recent_buy = False
-                        for past in reversed(ACCOUNT.events):
-                            if past.get("action") != "PAPER_BUY" or past.get("token") != key:
+                        candles = fetch_minute_candles(address, chain=chain)
+                        patterns = classify_candles(candles)
+                        signal = {"price": price}
+                        quote, issue = assess_paper_entry(signal, candles, snapshot)
+                        reversal = "reversao_apos_queda" in patterns
+                        positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
+                        if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
+                            logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s", chain, address[:8], issue or "no_positive_pattern", patterns)
+                            continue
+                        qualified += 1
+                        score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
+                        key = chain + ":" + address
+                        with LOCK:
+                            if key in ACCOUNT.positions:
+                                logging.info("SWING7 SKIP %s position_already_open", key)
+                                continue
+                            recent_buy = False
+                            for past in reversed(ACCOUNT.events):
+                                if past.get("action") != "PAPER_BUY" or past.get("token") != key:
+                                    continue
+                                try:
+                                    purchased_at = datetime.fromisoformat(past["timestamp"].replace("Z", "+00:00"))
+                                    recent_buy = (datetime.now(timezone.utc) - purchased_at).total_seconds() < 3600
+                                except (KeyError, TypeError, ValueError):
+                                    recent_buy = True
+                                break
+                            if recent_buy:
+                                logging.info("SWING7 SKIP %s one_hour_reentry_cooldown", key)
+                                continue
+                            if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
+                                logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
                                 continue
                             try:
-                                purchased_at = datetime.fromisoformat(past["timestamp"].replace("Z", "+00:00"))
-                                recent_buy = (datetime.now(timezone.utc) - purchased_at).total_seconds() < 3600
-                            except (KeyError, TypeError, ValueError):
-                                recent_buy = True
-                            break
-                        if recent_buy:
-                            logging.info("SWING7 SKIP %s one_hour_reentry_cooldown", key)
-                            continue
-                        if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
-                            logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
-                            continue
-                        try:
-                            event = buy_every_alert(key, chain, quote, valid_price(t.get("market_cap")), score,
-                                                    migration_status="not_required_swing7",
-                                                    migration_age_minutes=None, entry_patterns=patterns)
-                            LAST_PRICES[key] = quote
-                            bought += 1
-                            SIGNAL_STATS["bought"] += 1
-                            MARKET.setdefault("paper_decisions", []).append({
-                                "token": key, "result": "comprado", "strategy": "swing7",
-                                "reason": "Swing 7 dias: liquidez, cotacao e OHLCV validados; origem nao confirmada",
-                                "timestamp": datetime.now(timezone.utc).isoformat()})
-                            MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
-                            save()
-                            logging.info("SWING7 PAPER BUY %s age_h=%.1f score=%s patterns=%s event=%s", key, age, score, patterns, event)
-                        except (ValueError, KeyError) as exc:
-                            logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
-                    logging.info("SWING7 VERIFIED_CANDIDATE %s:%s age_h=%.1f patterns=%s price=%s", chain, address[:8], age, patterns, quote)
-            logging.info("SWING7 cycle finished candidates_1to7d=%s verified=%s bought=%s elapsed=%.1fs", checked, qualified, bought, time.monotonic()-started)
-        except Exception:
-            logging.exception("SWING7 discovery error")
-        time.sleep(max(0, 900 - (time.monotonic()-started)))
-
-
-def signal_worker():
-    """Read Telegram-approved signals promptly and explain every paper decision."""
-    global RADAR_SIGNAL_OFFSET
-    logging.info("Paper signal consumer started")
-    while True:
-        try:
-            with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
-                journal.seek(RADAR_SIGNAL_OFFSET)
-                lines=journal.readlines()
-                RADAR_SIGNAL_OFFSET=journal.tell()
-            for line in lines:
-                try:
-                    signal=json.loads(line)
-                    SIGNAL_STATS["received"] += 1
-                    SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
-                    chain=signal["chain"]
-                    key=chain+":"+signal["address"]
-                    price=valid_price(signal.get("price"))
-                    liquidity=valid_price(signal.get("liquidity"))
-                    # External OHLCV request outside the account lock.
-                    entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
-                    entry_patterns = classify_candles(entry_candles)
-                    observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
-                    confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
-                    reason=None
-                    with LOCK:
-                        if time.time()-float(signal.get("timestamp",0))>86400:
-                            reason="sinal expirado"
-                        elif chain != "sol":
-                            reason="rede não habilitada"
-                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
-                            reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
-                        elif not price:
-                            reason="preço inválido"
-                        elif entry_issue:
-                            reason=entry_issue
-                        elif key in ACCOUNT.positions:
-                            reason="posição já aberta"
-                        elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
-                            reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
-                        else:
-                            try:
-                                event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
-                                LAST_PRICES[key]=confirmed_price
-                                if valid_price(signal.get('market_cap')):
-                                    LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
+                                event = buy_every_alert(key, chain, quote, valid_price(t.get("market_cap")), score,
+                                                        migration_status="not_required_swing7",
+                                                        migration_age_minutes=None, entry_patterns=patterns)
+                                LAST_PRICES[key] = quote
+                                bought += 1
                                 SIGNAL_STATS["bought"] += 1
-                                logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
+                                MARKET.setdefault("paper_decisions", []).append({
+                                    "token": key, "result": "comprado", "strategy": "swing7",
+                                    "reason": "Swing 7 dias: liquidez, cotacao e OHLCV validados; origem nao confirmada",
+                                    "timestamp": datetime.now(timezone.utc).isoformat()})
+                                MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
                                 save()
-                            except (ValueError,KeyError) as exc:
-                                reason=str(exc)
-                        if reason:
-                            SIGNAL_STATS["skipped"] += 1
-                            logging.info("PAPER SKIP %s: %s",key,reason)
-                            MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
-                        MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
-                except Exception as exc:
-                    SIGNAL_STATS["last_error"] = str(exc)[:200]
-                    logging.exception("Paper signal processing FAILED: %s",type(exc).__name__)
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            SIGNAL_STATS["last_error"] = str(exc)[:200]
-            logging.exception("Signal journal processing failed")
-        time.sleep(2)
-
-@app.on_event("startup")
-def startup():
-    global RADAR_PROCESS
-    if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
-        env=dict(os.environ)
-        env["RADAR_EMBEDDED"]="1"
-        RADAR_PROCESS=subprocess.Popen([sys.executable,str(BASE.parent/"telegram_radar.py")],env=env)
-    else:
-        logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
-    threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
-    threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
-    threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
-    threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
-
-@app.middleware("http")
-async def headers(request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
-    return response
-
-@app.head("/")
-def root_head():
-    return Response(status_code=200)
-
-@app.get("/health")
-def health():
-    return {"status": "online", "mode": "paper", "real_trading": False}
-
-@app.get("/login")
-def old_login_redirect():
-    return RedirectResponse("/", status_code=303)
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return (BASE / "dashboard.html").read_text(encoding="utf-8")
-
-@app.get("/api/status")
-def status():
-    with LOCK:
-        positions = []
-        equity = ACCOUNT.cash_usd
-        for key, p in ACCOUNT.positions.items():
-            mark = LAST_PRICES.get(key)
-            value = p.quantity * mark * (1-ACCOUNT.slippage_pct/100) * (1-ACCOUNT.fee_pct/100) if mark else None
-            if value is not None:
-                equity += value
-            positions.append({"token": key, "network": p.network, "quantity": p.quantity,
-                              "entry_price": p.entry_price, "mark_price": mark,
-                              "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
-                              "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
-                              "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
-        token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
-        for p in positions:
-            p.update(token_meta.get(p["token"], {}))
-            if p["mark_price"] and p["entry_price"]:
-                p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
-                p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
-            paper_pos = ACCOUNT.positions[p["token"]]
-            p["stop_pct"] = paper_pos.stop_pct
-            p["target_pct"] = paper_pos.target_pct
-            p["stop_price"] = paper_pos.dynamic_stop_price
-            p["exit_strategy"] = paper_pos.exit_strategy
-            p["peak_price"] = paper_pos.peak_price
-            p["market_signals"] = paper_pos.last_market_signals
-        return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
-                "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
-                "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
-                "cash_usd": round(ACCOUNT.cash_usd, 4),
-                "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
-                "positions": positions, "trades": ACCOUNT.events,
-                "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
-                "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
+                                logging.info("SWING7 PAPER BUY %s age_h=%.1f score=%s patterns=%s event=%s", key, age, score, patterns, event)
+                            except (ValueError, KeyError) as exc:
+                                logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
+                        logging.info("SWING7 VERIFIED_CANDIDATE %s:%s age_h=%.1f patterns=%s price=%s", chain, address[:8], age, patterns, quote)
+                logging.info("SWING7 cycle finished candidates_1to7d=%s verified=%s bought=%s elapsed=%.1fs", checked, qualified, bought, time.monotonic()-started)
+            except Exception:
+                logging.exception("SWING7 discovery error")
+            time.sleep(max(0, 900 - (time.monotonic()-started)))
 
 
-@app.post("/api/paper/settings")
-async def update_paper_settings(request: Request):
-    """Update only the paper buy amount; adaptive exits are managed by the engine."""
-    origin=request.headers.get("origin","")
-    host=request.headers.get("host","")
-    if not origin or origin not in ("https://"+host,"http://"+host):
-        return JSONResponse({"error":"Origem não autorizada"},status_code=403)
-    if request.headers.get("content-type","").split(";")[0].strip()!="application/json":
-        return JSONResponse({"error":"JSON obrigatório"},status_code=415)
-    if int(request.headers.get("content-length") or "0")>1024:
-        return JSONResponse({"error":"Dados muito grandes"},status_code=413)
-    try:
-        from math import isfinite
-        data=await request.json()
-        settings={"operation_usd":float(data["operation_usd"])}
-        if not all(isfinite(v) for v in settings.values()):
-            raise ValueError()
-        if not (1<=settings["operation_usd"]<=10000):
-            raise ValueError()
-    except (ValueError,TypeError,KeyError,AttributeError):
-        return JSONResponse({"error":"Use valor por operação entre US$ 1 e US$ 10.000"},status_code=400)
-    with LOCK:
-        PAPER_SETTINGS.update(settings)
-        save()
-    return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas compras usarão o valor definido; saídas permanecem automáticas."}
+    def signal_worker():
+        """Read Telegram-approved signals promptly and explain every paper decision."""
+        global RADAR_SIGNAL_OFFSET
+        logging.info("Paper signal consumer started")
+        while True:
+            try:
+                with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
+                    journal.seek(RADAR_SIGNAL_OFFSET)
+                    lines=journal.readlines()
+                    RADAR_SIGNAL_OFFSET=journal.tell()
+                for line in lines:
+                    try:
+                        signal=json.loads(line)
+                        SIGNAL_STATS["received"] += 1
+                        SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
+                        chain=signal["chain"]
+                        key=chain+":"+signal["address"]
+                        price=valid_price(signal.get("price"))
+                        liquidity=valid_price(signal.get("liquidity"))
+                        # External OHLCV request outside the account lock.
+                        entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
+                        entry_patterns = classify_candles(entry_candles)
+                        observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
+                        confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
+                        reason=None
+                        with LOCK:
+                            if time.time()-float(signal.get("timestamp",0))>86400:
+                                reason="sinal expirado"
+                            elif chain != "sol":
+                                reason="rede não habilitada"
+                            elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
+                                reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
+                            elif not price:
+                                reason="preço inválido"
+                            elif entry_issue:
+                                reason=entry_issue
+                            elif key in ACCOUNT.positions:
+                                reason="posição já aberta"
+                            elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
+                                reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
+                            else:
+                                try:
+                                    event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
+                                    LAST_PRICES[key]=confirmed_price
+                                    if valid_price(signal.get('market_cap')):
+                                        LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
+                                    MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
+                                    SIGNAL_STATS["bought"] += 1
+                                    logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
+                                    save()
+                                except (ValueError,KeyError) as exc:
+                                    reason=str(exc)
+                            if reason:
+                                SIGNAL_STATS["skipped"] += 1
+                                logging.info("PAPER SKIP %s: %s",key,reason)
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
+                            MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
+                    except Exception as exc:
+                        SIGNAL_STATS["last_error"] = str(exc)[:200]
+                        logging.exception("Paper signal processing FAILED: %s",type(exc).__name__)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                SIGNAL_STATS["last_error"] = str(exc)[:200]
+                logging.exception("Signal journal processing failed")
+            time.sleep(2)
 
-@app.post("/api/paper/reset")
-async def reset_paper(request: Request):
-    """Confirmed reset of the public paper portfolio."""
-    global INITIAL_CAPITAL, EXTERNAL_FUNDING
-    origin = request.headers.get("origin", "")
-    host = request.headers.get("host", "")
-    if not origin or origin not in ("https://" + host, "http://" + host):
-        return JSONResponse({"error": "Origem não autorizada"}, status_code=403)
-    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
-        return JSONResponse({"error": "JSON obrigatório"}, status_code=415)
-    if int(request.headers.get("content-length") or "0") > 1024:
-        return JSONResponse({"error": "Dados muito grandes"}, status_code=413)
-    try:
-        payload = await request.json()
-        amount = float(payload.get("capital_usd"))
-        confirmed = payload.get("confirm_reset") is True
-        from math import isfinite
-        if not confirmed or not isfinite(amount) or amount != 100.0:
-            raise ValueError("Capital inválido ou redefinição não confirmada")
-    except (ValueError, TypeError, AttributeError):
-        return JSONResponse({"error": "O capital inicial é fixo em US$ 100; confirme a redefinição"}, status_code=400)
-    with LOCK:
-        INITIAL_CAPITAL = 100.0
-        EXTERNAL_FUNDING = 0.0
-        ACCOUNT.cash_usd = INITIAL_CAPITAL
-        ACCOUNT.positions.clear()
-        ACCOUNT.events.clear()
-        save()
-    return {"ok": True, "initial_paper_capital_usd": INITIAL_CAPITAL,
-            "notice": "Carteira fictícia reiniciada; operações anteriores apagadas"}
+    @app.on_event("startup")
+    def startup():
+        global RADAR_PROCESS
+        if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
+            env=dict(os.environ)
+            env["RADAR_EMBEDDED"]="1"
+            RADAR_PROCESS=subprocess.Popen([sys.executable,str(BASE.parent/"telegram_radar.py")],env=env)
+        else:
+            logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
+        threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
+        threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
+        threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
+        threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
+
+    @app.middleware("http")
+    async def headers(request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+        return response
+
+    @app.head("/")
+    def root_head():
+        return Response(status_code=200)
+
+    @app.get("/health")
+    def health():
+        return {"status": "online", "mode": "paper", "real_trading": False}
+
+    @app.get("/login")
+    def old_login_redirect():
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/", response_class=HTMLResponse)
+    def home():
+        return (BASE / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/api/status")
+    def status():
+        with LOCK:
+            positions = []
+            equity = ACCOUNT.cash_usd
+            for key, p in ACCOUNT.positions.items():
+                mark = LAST_PRICES.get(key)
+                value = p.quantity * mark * (1-ACCOUNT.slippage_pct/100) * (1-ACCOUNT.fee_pct/100) if mark else None
+                if value is not None:
+                    equity += value
+                positions.append({"token": key, "network": p.network, "quantity": p.quantity,
+                                  "entry_price": p.entry_price, "mark_price": mark,
+                                  "entry_market_cap":p.entry_market_cap,"current_market_cap":LAST_MARKET_CAPS.get(key),
+                                  "estimated_value_usd": value, "cost_basis_usd": p.entry_cost_usd,
+                                  "last_mark_at":p.last_mark_at,"mark_is_stale":not p.last_mark_at or (datetime.now(timezone.utc)-datetime.fromisoformat(p.last_mark_at)).total_seconds()>60})
+            token_meta = {t["chain"] + ":" + t["address"]: {"symbol": t.get("symbol"), "name": t.get("name")} for t in MARKET["tokens"]}
+            for p in positions:
+                p.update(token_meta.get(p["token"], {}))
+                if p["mark_price"] and p["entry_price"]:
+                    p["change_pct"] = round((p["mark_price"] / p["entry_price"] - 1) * 100, 2)
+                    p["unrealized_pnl_usd"] = round(p["estimated_value_usd"] - p["cost_basis_usd"], 4)
+                paper_pos = ACCOUNT.positions[p["token"]]
+                p["stop_pct"] = paper_pos.stop_pct
+                p["target_pct"] = paper_pos.target_pct
+                p["stop_price"] = paper_pos.dynamic_stop_price
+                p["exit_strategy"] = paper_pos.exit_strategy
+                p["peak_price"] = paper_pos.peak_price
+                p["market_signals"] = paper_pos.last_market_signals
+            return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
+                    "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
+                    "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
+                    "cash_usd": round(ACCOUNT.cash_usd, 4),
+                    "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
+                    "positions": positions, "trades": ACCOUNT.events,
+                    "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
+
+
+    @app.post("/api/paper/settings")
+    async def update_paper_settings(request: Request):
+        """Update only the paper buy amount; adaptive exits are managed by the engine."""
+        origin=request.headers.get("origin","")
+        host=request.headers.get("host","")
+        if not origin or origin not in ("https://"+host,"http://"+host):
+            return JSONResponse({"error":"Origem não autorizada"},status_code=403)
+        if request.headers.get("content-type","").split(";")[0].strip()!="application/json":
+            return JSONResponse({"error":"JSON obrigatório"},status_code=415)
+        if int(request.headers.get("content-length") or "0")>1024:
+            return JSONResponse({"error":"Dados muito grandes"},status_code=413)
+        try:
+            from math import isfinite
+            data=await request.json()
+            settings={"operation_usd":float(data["operation_usd"])}
+            if not all(isfinite(v) for v in settings.values()):
+                raise ValueError()
+            if not (1<=settings["operation_usd"]<=10000):
+                raise ValueError()
+        except (ValueError,TypeError,KeyError,AttributeError):
+            return JSONResponse({"error":"Use valor por operação entre US$ 1 e US$ 10.000"},status_code=400)
+        with LOCK:
+            PAPER_SETTINGS.update(settings)
+            save()
+        return {"ok":True,"paper_settings":dict(PAPER_SETTINGS),"notice":"Novas compras usarão o valor definido; saídas permanecem automáticas."}
+
+    @app.post("/api/paper/reset")
+    async def reset_paper(request: Request):
+        """Confirmed reset of the public paper portfolio."""
+        global INITIAL_CAPITAL, EXTERNAL_FUNDING
+        origin = request.headers.get("origin", "")
+        host = request.headers.get("host", "")
+        if not origin or origin not in ("https://" + host, "http://" + host):
+            return JSONResponse({"error": "Origem não autorizada"}, status_code=403)
+        if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+            return JSONResponse({"error": "JSON obrigatório"}, status_code=415)
+        if int(request.headers.get("content-length") or "0") > 1024:
+            return JSONResponse({"error": "Dados muito grandes"}, status_code=413)
+        try:
+            payload = await request.json()
+            amount = float(payload.get("capital_usd"))
+            confirmed = payload.get("confirm_reset") is True
+            from math import isfinite
+            if not confirmed or not isfinite(amount) or amount != 100.0:
+                raise ValueError("Capital inválido ou redefinição não confirmada")
+        except (ValueError, TypeError, AttributeError):
+            return JSONResponse({"error": "O capital inicial é fixo em US$ 100; confirme a redefinição"}, status_code=400)
+        with LOCK:
+            INITIAL_CAPITAL = 100.0
+            EXTERNAL_FUNDING = 0.0
+            ACCOUNT.cash_usd = INITIAL_CAPITAL
+            ACCOUNT.positions.clear()
+            ACCOUNT.events.clear()
+            save()
+        return {"ok": True, "initial_paper_capital_usd": INITIAL_CAPITAL,
+                "notice": "Carteira fictícia reiniciada; operações anteriores apagadas"}
