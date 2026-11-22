@@ -107,7 +107,7 @@ def _number(value):
 def fetch_token_snapshot(chain: str, address: str) -> dict | None:
     """Read-only Agent API token info; back off on auth errors to avoid hammering."""
     global _GMGN_INFO_BACKOFF_UNTIL, _GMGN_INFO_WARNED
-    if chain != "sol" or not address or time.monotonic() < _GMGN_INFO_BACKOFF_UNTIL:
+    if chain not in ("sol", "eth") or not address or time.monotonic() < _GMGN_INFO_BACKOFF_UNTIL:
         return None
     key = os.getenv("GMGN_API_KEY", "").strip()
     if not key:
@@ -142,14 +142,31 @@ def fetch_token_snapshot(chain: str, address: str) -> dict | None:
                     return f if 0 <= f <= 1 else None
                 except (ValueError, TypeError, OverflowError):
                     return None
+            def audit_ratio(*names):
+                for node in (stat, candidate, candidate.get("security"), candidate.get("risk")):
+                    if not isinstance(node, dict):
+                        continue
+                    for name in names:
+                        value = node.get(name)
+                        try:
+                            number = float(value)
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        # GMGN rate fields are 0..1; percent fields explicitly 0..100.
+                        if name.endswith(("_percent", "_percentage")) and number > 1:
+                            number /= 100
+                        if 0 <= number <= 1:
+                            return number
+                return None
             result = {"price": price, "source": "gmgn",
                       "liquidity": _number(candidate.get("liquidity")),
                       "buy_volume_1m": _number(price_data.get("buy_volume_1m")),
                       "sell_volume_1m": _number(price_data.get("sell_volume_1m")),
                       "buys_1m": _number(price_data.get("buys_1m")),
                       "sells_1m": _number(price_data.get("sells_1m")),
-                      "top10_ratio": ratio("top_10_holder_rate"),
-                      "bundler_ratio": ratio("top_bundler_trader_percentage"),
+                      "top10_ratio": audit_ratio("top_10_holder_rate", "top10_holder_rate", "top10_holder_percent"),
+                      "sniper_ratio": audit_ratio("top70_sniper_hold_rate", "sniper_rate"),
+                      "bundler_ratio": audit_ratio("top_bundler_trader_percentage", "bundler_rate", "bundler_trader_amount_rate"),
                       "insider_ratio": ratio("top_rat_trader_percentage"),
                       "dev_hold_ratio": ratio("dev_team_hold_rate"),
                       "launchpad_status": candidate.get("launchpad_status")}
