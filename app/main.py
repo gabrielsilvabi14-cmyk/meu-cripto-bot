@@ -157,17 +157,17 @@ def poll():
 
 def monitor_spot_prices():
     """Observe at most four ranked tokens per minute; no automatic paper entries."""
-    cursor = 0
     while True:
         started = time.monotonic()
         try:
             with LOCK:
                 ranked = list(MARKET.get("tokens") or [])
-            # Round-robin rather than hammering the same token.
-            watch = [t for t in ranked if t.get("chain") in ("sol", "eth") and t.get("address")]
-            if watch:
-                batch = [watch[(cursor + i) % len(watch)] for i in range(min(4, len(watch)))]
-                cursor = (cursor + len(batch)) % len(watch)
+            # Track a stable, bounded watchlist: two top-ranked per network.
+            # Repeated minute observations are required for 5/10/15m comparisons.
+            batch = []
+            for chain in ("sol", "eth"):
+                batch.extend([t for t in ranked if t.get("chain") == chain and t.get("address") and valid_price(t.get("price"))][:2])
+            if batch:
                 for token in batch:
                     chain, address = token["chain"], token["address"]
                     observation = fetch_market_observation(chain, address)
