@@ -212,7 +212,7 @@ def _dexscreener_spot(chain: str, address: str) -> dict | None:
     except HTTPError as exc:
         logging.warning("DexScreener HTTP %s for %s:%s", exc.code, chain, address[:8])
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
-        logging.warning("DexScreener %s for %s:%s", type(exc).__name__, chain, chain, address[:8])
+        logging.warning("DexScreener %s for %s:%s", type(exc).__name__, chain, address[:8])
     return None
 
 
@@ -231,7 +231,7 @@ def _geckoterminal_spot(chain: str, address: str) -> dict | None:
         attributes = token.get("attributes") or {}
         price = _number(attributes.get("price_usd"))
         if price is not None:
-            logging.info("PAPER PRICE source=geckoterminal %s:%s price_usd=%.12g", address[:8], price)
+            logging.info("PAPER PRICE source=geckoterminal %s:%s price_usd=%.12g", chain, address[:8], price)
             return {"price": price, "source": "geckoterminal"}
     except HTTPError as exc:
         logging.warning("GeckoTerminal HTTP %s for sol:%s", exc.code, address[:8])
@@ -284,5 +284,5 @@ def fetch_market_observation(chain: str, address: str) -> dict | None:
         result = source(chain, address)
         if result is not None and _number(result.get("price")) is not None:
             return result
-    logging.error("PAPER PRICE ALL SOURCES FAILED %s:%s; no synthetic exit price", address[:8])
+    logging.error("PAPER PRICE ALL SOURCES FAILED %s:%s; no synthetic exit price", chain, address[:8])
     return None
