@@ -247,7 +247,7 @@ def assess_paper_entry(signal, candles, observation):
 
 
 def swing_week_worker():
-    """Independent 1-7 day Pump.fun paper strategy with validated entry checks."""
+    """Independent 1-7 day Solana paper strategy; migration is not an entry gate."""
     while True:
         started = time.monotonic()
         checked = 0
@@ -265,12 +265,11 @@ def swing_week_worker():
                 if not address:
                     continue
                 snapshot = fetch_token_snapshot("sol", address)
-                # GMGN ranking and token-address suffix are not proof of origin.
-                # Only explicit Pump.fun launchpad metadata can authorize a trade.
+                # launchpad_status may be a numeric migration state, not provenance.
+                # Swing7 paper entries do not require migration or launchpad status.
                 origin = str((snapshot or {}).get("launchpad_status") or "").lower()
                 if origin not in ("pump.fun", "pumpfun", "pump_fun"):
-                    logging.info("SWING7 SKIP sol:%s origin_not_verified status=%s", address[:8], origin[:32])
-                    continue
+                    logging.info("SWING7 INFO sol:%s pumpfun_origin_unverified status=%s; paper evaluation continues", address[:8], origin[:32])
                 liquidity = valid_price((snapshot or {}).get("liquidity"))
                 price = valid_price((snapshot or {}).get("price"))
                 if not liquidity or liquidity < 20000 or not price:
@@ -310,14 +309,14 @@ def swing_week_worker():
                         continue
                     try:
                         event = buy_every_alert(key, "sol", quote, valid_price(t.get("market_cap")), score,
-                                                migration_status="pumpfun_origin_confirmed_migration_time_unknown",
+                                                migration_status="not_required_swing7",
                                                 migration_age_minutes=None, entry_patterns=patterns)
                         LAST_PRICES[key] = quote
                         bought += 1
                         SIGNAL_STATS["bought"] += 1
                         MARKET.setdefault("paper_decisions", []).append({
                             "token": key, "result": "comprado", "strategy": "swing7",
-                            "reason": "Swing 7 dias: origem, liquidez, cotacao e OHLCV validados",
+                            "reason": "Swing 7 dias: liquidez, cotacao e OHLCV validados; origem nao confirmada",
                             "timestamp": datetime.now(timezone.utc).isoformat()})
                         MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
                         save()
