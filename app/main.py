@@ -130,7 +130,7 @@ def poll():
         with LOCK:
             MARKET.update(connected=bool(tokens), last_check=now, errors=errors,
                           chain_status=chain_status, phase=("monitorando" if tokens else "erro na integração"),
-                          tokens=tokens[:100], cycles=MARKET["cycles"] + 1)
+                          tokens=tokens[:200], cycles=MARKET["cycles"] + 1)
             if tokens:
                 MARKET["last_success"] = now
             current = {}
@@ -167,7 +167,7 @@ def monitor_spot_prices():
             # Repeated minute observations are required for 5/10/15m comparisons.
             batch = []
             for chain in ("sol", "eth"):
-                batch.extend([t for t in ranked if t.get("chain") == chain and t.get("address") and valid_price(t.get("price"))][:2])
+                batch.extend([t for t in ranked if t.get("chain") == chain and t.get("address") and valid_price(t.get("price")) and (valid_price(t.get("liquidity")) or 0) >= 12000][:2])
             if batch:
                 for token in batch:
                     chain, address = token["chain"], token["address"]
@@ -374,19 +374,65 @@ def swing_week_worker():
         time.sleep(max(0, 900 - (time.monotonic()-started)))
 
 
+def confirm_entry_samples(signal, first, latest):
+    quote, issue = assess_paper_entry(signal, latest)
+    if issue:
+        return None, issue
+    initial = valid_price((first or {}).get("price"))
+    initial_liquidity = valid_price((first or {}).get("liquidity"))
+    current_liquidity = valid_price((latest or {}).get("liquidity"))
+    if not initial or not initial_liquidity:
+        return None, "observação inicial indisponível"
+    if first.get("source") != latest.get("source"):
+        return None, "fontes diferentes; confirmação inconclusiva"
+    if current_liquidity < initial_liquidity * 0.90:
+        return None, "liquidez caiu mais de 10% durante observação"
+    if quote < initial:
+        return None, "preço perdeu força durante observação"
+    for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio"):
+        value = latest.get(metric)
+        if isinstance(value, (int, float)) and value >= 0.50:
+            return None, "auditoria atual acima ou igual a 50%: " + metric
+    return quote, None
+
+
 def signal_worker():
     """Read Telegram-approved signals promptly and explain every paper decision."""
     global RADAR_SIGNAL_OFFSET
-    logging.info("Paper signal consumer started")
+    logging.info("Paper signal consumer started; spot confirmation enabled")
+    pending = {}
     while True:
         try:
-            with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
-                journal.seek(RADAR_SIGNAL_OFFSET)
-                lines=journal.readlines()
-                RADAR_SIGNAL_OFFSET=journal.tell()
+            lines = []
+            try:
+                with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
+                    journal.seek(RADAR_SIGNAL_OFFSET)
+                    lines=journal.readlines()
+                    RADAR_SIGNAL_OFFSET=journal.tell()
+            except FileNotFoundError:
+                pass
             for line in lines:
                 try:
-                    signal=json.loads(line)
+                    candidate = json.loads(line)
+                    candidate_chain = candidate["chain"]
+                    candidate_key = candidate_chain + ":" + candidate["address"]
+                    if candidate_key in pending:
+                        continue
+                    if len(pending) >= 12:
+                        logging.info("PAPER SKIP %s: fila de observação cheia", candidate_key)
+                        SIGNAL_STATS["received"] += 1
+                        SIGNAL_STATS["skipped"] += 1
+                        continue
+                    first = fetch_market_observation(candidate_chain, candidate["address"]) if candidate_chain in ("sol", "eth") else None
+                    _, issue = assess_paper_entry(candidate, first)
+                    pending[candidate_key] = (candidate, first, time.monotonic() + (0 if issue else 60), issue)
+                    logging.info("PAPER WATCH %s initial_issue=%s", candidate_key, issue)
+                except Exception:
+                    logging.exception("PAPER WATCH signal failed")
+            ready = [(key, item) for key, item in pending.items() if time.monotonic() >= item[2]]
+            for pending_key, (signal, first, due, initial_issue) in ready:
+                pending.pop(pending_key, None)
+                try:
                     SIGNAL_STATS["received"] += 1
                     SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
                     chain=signal["chain"]
@@ -395,8 +441,11 @@ def signal_worker():
                     liquidity=valid_price(signal.get("liquidity"))
                     # External OHLCV request outside the account lock.
                     entry_patterns = []  # Chart patterns not evaluated without OHLCV.
-                    observation = fetch_market_observation(chain, signal["address"]) if chain in ("sol", "eth") else None
-                    confirmed_price, entry_issue = assess_paper_entry(signal, observation)
+                    observation = fetch_market_observation(chain, signal["address"]) if not initial_issue and chain in ("sol", "eth") else None
+                    confirmed_price, entry_issue = (None, initial_issue) if initial_issue else confirm_entry_samples(signal, first, observation)
+                    logging.info("PAPER WATCH RESULT %s first=%s latest=%s issue=%s", key,
+                                 {k: (first or {}).get(k) for k in ("price", "liquidity", "buy_volume_1m", "sell_volume_1m", "source")},
+                                 {k: (observation or {}).get(k) for k in ("price", "liquidity", "buy_volume_1m", "sell_volume_1m", "source")}, entry_issue)
                     if confirmed_price:
                         record_spot(chain, signal["address"], confirmed_price)
                         logging.info("SPOT ENTRY HISTORY %s %s", key, analyze_spot(chain, signal["address"]))
@@ -406,8 +455,8 @@ def signal_worker():
                             reason="sinal expirado"
                         elif chain not in ("sol", "eth"):
                             reason="rede não habilitada"
-                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
-                            reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
+                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])["minimum_score_exclusive"] < signal["score"] <= 100):
+                            reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])["minimum_score_exclusive"]
                         elif not price:
                             reason="preço inválido"
                         elif entry_issue:
@@ -420,7 +469,7 @@ def signal_worker():
                                 LAST_PRICES[key]=confirmed_price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço e liquidez spot; sem validação de velas","timestamp":datetime.now(timezone.utc).isoformat()})
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e duas observações spot; sem validação de velas","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
                                 logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
                                 save()
@@ -512,11 +561,16 @@ def status():
             p["peak_price"] = paper_pos.peak_price
             p["market_signals"] = paper_pos.last_market_signals
         return {"mode": "paper", "connected_to_gmgn": MARKET["connected"],
-                "trading_enabled": False, "paper_enabled": True, "networks": ["sol"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
+                "trading_enabled": False, "paper_enabled": True, "networks": ["sol", "eth"], "telegram_radar_running": RADAR_PROCESS is not None and RADAR_PROCESS.poll() is None,
                 "planned_risk_pct": 2, "paper_settings":dict(PAPER_SETTINGS), "learning":evaluate_learning(ACCOUNT.events), "signal_stats":dict(SIGNAL_STATS), "initial_paper_capital_usd": INITIAL_CAPITAL, "external_funding_usd": EXTERNAL_FUNDING,
                 "cash_usd": round(ACCOUNT.cash_usd, 4),
                 "estimated_equity_usd": round(equity, 4) if len(positions) == sum(p["estimated_value_usd"] is not None for p in positions) else None,
                 "positions": positions, "trades": ACCOUNT.events,
+                "by_network": {chain: {
+                    "positions": [p for p in positions if p["network"] == chain],
+                    "trades": [e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")],
+                    "learning": evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])
+                } for chain in ("sol", "eth")},
                 "market": dict(MARKET), "paper_decisions": MARKET.get("paper_decisions",[])[-30:], "timestamp": datetime.now(timezone.utc).isoformat(),
                 "warning": "Dados indicativos; liquidez, preço e execução não garantidos. Estado local pode ser perdido ao reiniciar o Render."}
 
