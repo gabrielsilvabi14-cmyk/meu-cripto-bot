@@ -334,79 +334,79 @@ def swing_week_worker():
                             logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
                     logging.info("SWING7 VERIFIED_CANDIDATE %s:%s age_h=%.1f patterns=%s price=%s", chain, address[:8], age, patterns, quote)
             logging.info("SWING7 cycle finished candidates_1to7d=%s verified=%s bought=%s elapsed=%.1fs", checked, qualified, bought, time.monotonic()-started)
-            except Exception:
-                logging.exception("SWING7 discovery error")
-            time.sleep(max(0, 900 - (time.monotonic()-started)))
+        except Exception:
+            logging.exception("SWING7 discovery error")
+        time.sleep(max(0, 900 - (time.monotonic()-started)))
 
 
-    def signal_worker():
-        """Read Telegram-approved signals promptly and explain every paper decision."""
-        global RADAR_SIGNAL_OFFSET
-        logging.info("Paper signal consumer started")
-        while True:
-            try:
-                with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
-                    journal.seek(RADAR_SIGNAL_OFFSET)
-                    lines=journal.readlines()
-                    RADAR_SIGNAL_OFFSET=journal.tell()
-                for line in lines:
-                    try:
-                        signal=json.loads(line)
-                        SIGNAL_STATS["received"] += 1
-                        SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
-                        chain=signal["chain"]
-                        key=chain+":"+signal["address"]
-                        price=valid_price(signal.get("price"))
-                        liquidity=valid_price(signal.get("liquidity"))
-                        # External OHLCV request outside the account lock.
-                        entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
-                        entry_patterns = classify_candles(entry_candles)
-                        observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
-                        confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
-                        reason=None
-                        with LOCK:
-                            if time.time()-float(signal.get("timestamp",0))>86400:
-                                reason="sinal expirado"
-                            elif chain != "sol":
-                                reason="rede não habilitada"
-                            elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
-                                reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
-                            elif not price:
-                                reason="preço inválido"
-                            elif entry_issue:
-                                reason=entry_issue
-                            elif key in ACCOUNT.positions:
-                                reason="posição já aberta"
-                            elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
-                                reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
-                            else:
-                                try:
-                                    event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
-                                    LAST_PRICES[key]=confirmed_price
-                                    if valid_price(signal.get('market_cap')):
-                                        LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                    MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
-                                    SIGNAL_STATS["bought"] += 1
-                                    logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
-                                    save()
-                                except (ValueError,KeyError) as exc:
-                                    reason=str(exc)
-                            if reason:
-                                SIGNAL_STATS["skipped"] += 1
-                                logging.info("PAPER SKIP %s: %s",key,reason)
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
-                            MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
-                    except Exception as exc:
-                        SIGNAL_STATS["last_error"] = str(exc)[:200]
-                        logging.exception("Paper signal processing FAILED: %s",type(exc).__name__)
-            except FileNotFoundError:
-                pass
-            except Exception as exc:
-                SIGNAL_STATS["last_error"] = str(exc)[:200]
-                logging.exception("Signal journal processing failed")
-            time.sleep(2)
+def signal_worker():
+    """Read Telegram-approved signals promptly and explain every paper decision."""
+    global RADAR_SIGNAL_OFFSET
+    logging.info("Paper signal consumer started")
+    while True:
+        try:
+            with RADAR_SIGNAL_FILE.open("r",encoding="utf-8") as journal:
+                journal.seek(RADAR_SIGNAL_OFFSET)
+                lines=journal.readlines()
+                RADAR_SIGNAL_OFFSET=journal.tell()
+            for line in lines:
+                try:
+                    signal=json.loads(line)
+                    SIGNAL_STATS["received"] += 1
+                    SIGNAL_STATS["last_signal"] = datetime.now(timezone.utc).isoformat()
+                    chain=signal["chain"]
+                    key=chain+":"+signal["address"]
+                    price=valid_price(signal.get("price"))
+                    liquidity=valid_price(signal.get("liquidity"))
+                    # External OHLCV request outside the account lock.
+                    entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
+                    entry_patterns = classify_candles(entry_candles)
+                    observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
+                    confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
+                    reason=None
+                    with LOCK:
+                        if time.time()-float(signal.get("timestamp",0))>86400:
+                            reason="sinal expirado"
+                        elif chain != "sol":
+                            reason="rede não habilitada"
+                        elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
+                            reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
+                        elif not price:
+                            reason="preço inválido"
+                        elif entry_issue:
+                            reason=entry_issue
+                        elif key in ACCOUNT.positions:
+                            reason="posição já aberta"
+                        elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
+                            reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
+                        else:
+                            try:
+                                event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
+                                LAST_PRICES[key]=confirmed_price
+                                if valid_price(signal.get('market_cap')):
+                                    LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
+                                SIGNAL_STATS["bought"] += 1
+                                logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
+                                save()
+                            except (ValueError,KeyError) as exc:
+                                reason=str(exc)
+                        if reason:
+                            SIGNAL_STATS["skipped"] += 1
+                            logging.info("PAPER SKIP %s: %s",key,reason)
+                            MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"ignorado","reason":reason,"timestamp":datetime.now(timezone.utc).isoformat()})
+                        MARKET["paper_decisions"]=MARKET.get("paper_decisions",[])[-80:]
+                except Exception as exc:
+                    SIGNAL_STATS["last_error"] = str(exc)[:200]
+                    logging.exception("Paper signal processing FAILED: %s",type(exc).__name__)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            SIGNAL_STATS["last_error"] = str(exc)[:200]
+            logging.exception("Signal journal processing failed")
+        time.sleep(2)
 
-    @app.on_event("startup")
+@app.on_event("startup")
     def startup():
         global RADAR_PROCESS
         if all(os.getenv(k) for k in ("TELEGRAM_TOKEN","TELEGRAM_CHAT_ID","GMGN_API_KEY")):
