@@ -115,7 +115,7 @@ def poll():
         with LOCK:
             MARKET["phase"] = "consultando GMGN"
             MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
-        for chain in ("sol",):
+        for chain in ("sol", "eth"):
             try:
                 found = fetch_rank(chain, limit=100)
                 tokens.extend(found)
@@ -168,7 +168,7 @@ def monitor_exits():
                     if price is None:
                         logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
-                    candle_patterns = classify_candles(fetch_minute_candles(address)) if chain == 'sol' else []
+                    candle_patterns = classify_candles(fetch_minute_candles(address, chain=chain)) if chain in ('sol', 'eth') else []
                     if candle_patterns:
                         observation = dict(observation or {}, candle_patterns=candle_patterns)
                     with LOCK:
@@ -255,75 +255,84 @@ def swing_week_worker():
         bought = 0
         try:
             from app.integrations.gmgn import fetch_token_snapshot
-            candidates = fetch_rank("sol", interval="1h", limit=100)
-            for t in candidates:
-                age = valid_price(t.get("age_hours"))
-                if age is None or not 24 <= age <= 168:
-                    continue
-                checked += 1
-                address = t.get("address")
-                if not address:
-                    continue
-                snapshot = fetch_token_snapshot("sol", address)
-                # launchpad_status may be a numeric migration state, not provenance.
-                # Swing7 paper entries do not require migration or launchpad status.
-                origin = str((snapshot or {}).get("launchpad_status") or "").lower()
-                if origin not in ("pump.fun", "pumpfun", "pump_fun"):
-                    logging.info("SWING7 INFO sol:%s pumpfun_origin_unverified status=%s; paper evaluation continues", address[:8], origin[:32])
-                liquidity = valid_price((snapshot or {}).get("liquidity"))
-                price = valid_price((snapshot or {}).get("price"))
-                if not liquidity or liquidity < 20000 or not price:
-                    logging.info("SWING7 SKIP sol:%s liquidity_or_price_unavailable", address[:8])
-                    continue
-                candles = fetch_minute_candles(address)
-                patterns = classify_candles(candles)
-                signal = {"price": price}
-                quote, issue = assess_paper_entry(signal, candles, snapshot)
-                reversal = "reversao_apos_queda" in patterns
-                positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
-                if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
-                    logging.info("SWING7 SKIP sol:%s reason=%s patterns=%s", address[:8], issue or "no_positive_pattern", patterns)
-                    continue
-                qualified += 1
-                score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
-                key = "sol:" + address
-                with LOCK:
-                    if key in ACCOUNT.positions:
-                        logging.info("SWING7 SKIP %s position_already_open", key)
+            for chain in ("sol", "eth"):
+                candidates = fetch_rank(chain, interval="1h", limit=100)
+                for t in candidates:
+                    age = valid_price(t.get("age_hours"))
+                    if age is None or not 24 <= age <= 168:
                         continue
-                    recent_buy = False
-                    for past in reversed(ACCOUNT.events):
-                        if past.get("action") != "PAPER_BUY" or past.get("token") != key:
+                    checked += 1
+                    address = t.get("address")
+                    if not address:
+                        continue
+                    snapshot = fetch_token_snapshot(chain, address)
+                    # launchpad_status may be a numeric migration state, not provenance.
+                    # Swing7 paper entries do not require migration or launchpad status.
+                    origin = str((snapshot or {}).get("launchpad_status") or "").lower()
+                    if origin not in ("pump.fun", "pumpfun", "pump_fun"):
+                        logging.info("SWING7 INFO %s:%s pumpfun_origin_unverified status=%s; paper evaluation continues", chain, address[:8], origin[:32])
+                    audit = snapshot or {}
+                for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio"):
+                    value = audit.get(metric)
+                    logging.info("SWING7 AUDIT %s:%s %s=%s", chain, address[:8], metric, "not_verified" if value is None else "%.2f%%" % (value * 100))
+                blocked = [metric for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio") if audit.get(metric) is None or audit[metric] >= 0.50]
+                if blocked:
+                    logging.info("SWING7 SKIP %s:%s audit_missing_or_ge_50pct=%s", chain, address[:8], ",".join(blocked))
+                    continue
+                liquidity = valid_price((snapshot or {}).get("liquidity"))
+                    price = valid_price((snapshot or {}).get("price"))
+                    if not liquidity or liquidity < 20000 or not price:
+                        logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable", address[:8])
+                        continue
+                    candles = fetch_minute_candles(address, chain=chain)
+                    patterns = classify_candles(candles)
+                    signal = {"price": price}
+                    quote, issue = assess_paper_entry(signal, candles, snapshot)
+                    reversal = "reversao_apos_queda" in patterns
+                    positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
+                    if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
+                        logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s", chain, address[:8], issue or "no_positive_pattern", patterns)
+                        continue
+                    qualified += 1
+                    score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
+                    key = chain + ":" + address
+                    with LOCK:
+                        if key in ACCOUNT.positions:
+                            logging.info("SWING7 SKIP %s position_already_open", key)
+                            continue
+                        recent_buy = False
+                        for past in reversed(ACCOUNT.events):
+                            if past.get("action") != "PAPER_BUY" or past.get("token") != key:
+                                continue
+                            try:
+                                purchased_at = datetime.fromisoformat(past["timestamp"].replace("Z", "+00:00"))
+                                recent_buy = (datetime.now(timezone.utc) - purchased_at).total_seconds() < 3600
+                            except (KeyError, TypeError, ValueError):
+                                recent_buy = True
+                            break
+                        if recent_buy:
+                            logging.info("SWING7 SKIP %s one_hour_reentry_cooldown", key)
+                            continue
+                        if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
+                            logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
                             continue
                         try:
-                            purchased_at = datetime.fromisoformat(past["timestamp"].replace("Z", "+00:00"))
-                            recent_buy = (datetime.now(timezone.utc) - purchased_at).total_seconds() < 3600
-                        except (KeyError, TypeError, ValueError):
-                            recent_buy = True
-                        break
-                    if recent_buy:
-                        logging.info("SWING7 SKIP %s one_hour_reentry_cooldown", key)
-                        continue
-                    if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
-                        logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
-                        continue
-                    try:
-                        event = buy_every_alert(key, "sol", quote, valid_price(t.get("market_cap")), score,
-                                                migration_status="not_required_swing7",
-                                                migration_age_minutes=None, entry_patterns=patterns)
-                        LAST_PRICES[key] = quote
-                        bought += 1
-                        SIGNAL_STATS["bought"] += 1
-                        MARKET.setdefault("paper_decisions", []).append({
-                            "token": key, "result": "comprado", "strategy": "swing7",
-                            "reason": "Swing 7 dias: liquidez, cotacao e OHLCV validados; origem nao confirmada",
-                            "timestamp": datetime.now(timezone.utc).isoformat()})
-                        MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
-                        save()
-                        logging.info("SWING7 PAPER BUY %s age_h=%.1f score=%s patterns=%s event=%s", key, age, score, patterns, event)
-                    except (ValueError, KeyError) as exc:
-                        logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
-                logging.info("SWING7 VERIFIED_CANDIDATE sol:%s age_h=%.1f patterns=%s price=%s", address[:8], age, patterns, quote)
+                            event = buy_every_alert(key, chain, quote, valid_price(t.get("market_cap")), score,
+                                                    migration_status="not_required_swing7",
+                                                    migration_age_minutes=None, entry_patterns=patterns)
+                            LAST_PRICES[key] = quote
+                            bought += 1
+                            SIGNAL_STATS["bought"] += 1
+                            MARKET.setdefault("paper_decisions", []).append({
+                                "token": key, "result": "comprado", "strategy": "swing7",
+                                "reason": "Swing 7 dias: liquidez, cotacao e OHLCV validados; origem nao confirmada",
+                                "timestamp": datetime.now(timezone.utc).isoformat()})
+                            MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
+                            save()
+                            logging.info("SWING7 PAPER BUY %s age_h=%.1f score=%s patterns=%s event=%s", key, age, score, patterns, event)
+                        except (ValueError, KeyError) as exc:
+                            logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
+                    logging.info("SWING7 VERIFIED_CANDIDATE %s:%s age_h=%.1f patterns=%s price=%s", chain, address[:8], age, patterns, quote)
             logging.info("SWING7 cycle finished candidates_1to7d=%s verified=%s bought=%s elapsed=%.1fs", checked, qualified, bought, time.monotonic()-started)
         except Exception:
             logging.exception("SWING7 discovery error")
