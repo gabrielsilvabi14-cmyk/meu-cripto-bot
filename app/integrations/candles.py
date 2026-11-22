@@ -12,6 +12,8 @@ _POOL_CACHE = {}
 _LOCK = threading.RLock()
 _NEXT_REQUEST = 0.0
 _COOLDOWN_UNTIL = 0.0
+_RATE_LIMIT_STREAK = 0
+_LAST_429_AT = 0.0
 
 class RateLimited(Exception):
     pass
@@ -19,7 +21,7 @@ BASE = "https://api.geckoterminal.com/api/v2/networks/solana"
 HEADERS = {"Accept": "application/json;version=20230302", "User-Agent": "Mozilla/5.0"}
 
 def _get(url):
-    global _NEXT_REQUEST, _COOLDOWN_UNTIL
+    global _NEXT_REQUEST, _COOLDOWN_UNTIL, _RATE_LIMIT_STREAK, _LAST_429_AT
     with _LOCK:
         now = time.monotonic()
         if now < _COOLDOWN_UNTIL:
@@ -30,7 +32,11 @@ def _get(url):
         _NEXT_REQUEST = time.monotonic() + 3.0
     try:
         with urlopen(Request(url, headers=HEADERS), timeout=7) as response:
-            return json.load(response)
+            payload = json.load(response)
+        with _LOCK:
+            if time.monotonic() - _LAST_429_AT > 1800:
+                _RATE_LIMIT_STREAK = 0
+        return payload
     except HTTPError as exc:
         if exc.code == 429:
             try:
@@ -38,8 +44,12 @@ def _get(url):
             except (ValueError, TypeError):
                 delay = 60.0
             with _LOCK:
-                _COOLDOWN_UNTIL = max(_COOLDOWN_UNTIL, time.monotonic() + delay)
-            logging.warning("OHLCV HTTP 429: cooldown %.0fs", delay)
+                current = time.monotonic()
+                _RATE_LIMIT_STREAK = _RATE_LIMIT_STREAK + 1 if current - _LAST_429_AT < 1800 else 1
+                _LAST_429_AT = current
+                delay = max(delay, min(900.0, 60.0 * (2 ** min(_RATE_LIMIT_STREAK - 1, 4))))
+                _COOLDOWN_UNTIL = max(_COOLDOWN_UNTIL, current + delay)
+            logging.warning("OHLCV HTTP 429: cooldown %.0fs streak=%s", delay, _RATE_LIMIT_STREAK)
             raise RateLimited("HTTP 429") from exc
         raise
 
@@ -50,7 +60,7 @@ def fetch_minute_candles(address, limit=40):
     now = time.monotonic()
     with _LOCK:
         cached = _CACHE.get(address)
-    if cached and now - cached[0] < (60 if cached[1] else 15):
+    if cached and now - cached[0] < (30 if cached[1] else 30):
         return cached[1]
     candles = []
     failed = False
@@ -70,6 +80,8 @@ def fetch_minute_candles(address, limit=40):
                     return 0.0
             pools.sort(key=pool_rank, reverse=True)
             pool_id = pools[0]["id"].split("_", 1)[-1] if pools else None
+            if not pool_id:
+                logging.info("OHLCV no pool token=%s", address[:8])
             if pool_id:
                 with _LOCK:
                     _POOL_CACHE[address] = (time.monotonic(), pool_id)
