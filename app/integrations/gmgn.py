@@ -171,7 +171,7 @@ def fetch_token_snapshot(chain: str, address: str) -> dict | None:
                       "dev_hold_ratio": ratio("dev_team_hold_rate"),
                       "launchpad_status": candidate.get("launchpad_status")}
             _GMGN_INFO_WARNED = False
-            logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g", chain, chain, address[:8], price)
+            logging.info("PAPER PRICE source=gmgn %s:%s price_usd=%.12g", chain, address[:8], price)
             return result
     except HTTPError as exc:
         if exc.code == 429:
