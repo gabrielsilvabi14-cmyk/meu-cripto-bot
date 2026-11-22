@@ -247,7 +247,7 @@ def assess_paper_entry(signal, candles, observation):
 
 
 def swing_week_worker():
-    """Independent 1-7 day Solana paper strategy; migration is not an entry gate."""
+    """Independent 1-7 day Solana/Ethereum paper strategy; no migration gate."""
     while True:
         started = time.monotonic()
         checked = 0
@@ -282,7 +282,7 @@ def swing_week_worker():
                     liquidity = valid_price((snapshot or {}).get("liquidity"))
                     price = valid_price((snapshot or {}).get("price"))
                     if not liquidity or liquidity < 20000 or not price:
-                        logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable", address[:8])
+                        logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable liquidity=%s price=%s", chain, address[:8], liquidity, price)
                         continue
                     candles = fetch_minute_candles(address, chain=chain)
                     patterns = classify_candles(candles)
@@ -291,7 +291,7 @@ def swing_week_worker():
                     reversal = "reversao_apos_queda" in patterns
                     positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
                     if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
-                        logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s", chain, address[:8], issue or "no_positive_pattern", patterns)
+                        logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s candles=%s", chain, address[:8], issue or "no_positive_pattern", patterns, len(candles))
                         continue
                     qualified += 1
                     score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
