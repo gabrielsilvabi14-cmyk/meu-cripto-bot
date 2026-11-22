@@ -16,7 +16,6 @@ from fastapi.staticfiles import StaticFiles
 from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap, fetch_market_observation
 from app.trading.paper import PaperAccount
 from app.trading.adaptive import evaluate as evaluate_learning
-from app.integrations.candles import fetch_minute_candles, classify as classify_candles
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_url=None)
@@ -168,7 +167,7 @@ def monitor_exits():
                     if price is None:
                         logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
-                    candle_patterns = classify_candles(fetch_minute_candles(address, chain=chain)) if chain in ('sol', 'eth') else []
+                    candle_patterns = []  # No OHLCV source: never invent candle patterns.
                     if candle_patterns:
                         observation = dict(observation or {}, candle_patterns=candle_patterns)
                     with LOCK:
@@ -211,8 +210,8 @@ def buy_every_alert(key,chain,price,market_cap=None,score=None,migration_status=
     ACCOUNT.events.append(event)
     return event
 
-def assess_paper_entry(signal, candles, observation):
-    """Require current, coherent market data and completed-candle confirmation."""
+def assess_paper_entry(signal, observation):
+    """Spot-only confirmation. No synthetic candles or chart-pattern claims."""
     quote = valid_price((observation or {}).get("price"))
     signal_price = valid_price(signal.get("price"))
     liquidity = valid_price((observation or {}).get("liquidity"))
@@ -222,23 +221,6 @@ def assess_paper_entry(signal, candles, observation):
         return None, "cotação mudou mais de 12% desde o sinal"
     if liquidity is None or liquidity < 12000:
         return None, "liquidez atual insuficiente ou não verificada (mínimo US$ 12 mil)"
-    if len(candles) < 8 or any(b["ts"] - a["ts"] != 60 for a, b in zip(candles[-8:], candles[-7:])):
-        return None, "histórico OHLCV de 8 velas fechadas indisponível"
-    recent = candles[-8:]
-    closes = [x["close"] for x in recent]
-    vols = [x["volume"] for x in recent]
-    if closes[-1] <= 0 or min(closes) <= 0:
-        return None, "velas com preços inválidos"
-    if abs(quote / closes[-1] - 1) > 0.18:
-        return None, "preço da pool OHLCV diverge da cotação atual"
-    if closes[-1] < closes[-3] or closes[-1] < closes[-2]:
-        return None, "momentum de curto prazo negativo"
-    if closes[-1] < max(x["high"] for x in recent) * 0.84:
-        return None, "recuo acentuado do pico recente"
-    if closes[-1] > closes[0] * 1.8 or closes[-1] > closes[-2] * 1.20:
-        return None, "alta explosiva; risco de entrada tardia"
-    if sum(vols[-3:]) < sum(vols[:3]) * 0.75:
-        return None, "volume recente enfraquecendo"
     buy_vol = (observation or {}).get("buy_volume_1m")
     sell_vol = (observation or {}).get("sell_volume_1m")
     if isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol > max(buy_vol, 1) * 1.4:
@@ -284,17 +266,10 @@ def swing_week_worker():
                     if not liquidity or liquidity < 20000 or not price:
                         logging.info("SWING7 SKIP %s:%s liquidity_or_price_unavailable liquidity=%s price=%s", chain, address[:8], liquidity, price)
                         continue
-                    candles = fetch_minute_candles(address, chain=chain)
-                    patterns = classify_candles(candles)
-                    signal = {"price": price}
-                    quote, issue = assess_paper_entry(signal, candles, snapshot)
-                    reversal = "reversao_apos_queda" in patterns
-                    positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
-                    if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
-                        logging.info("SWING7 SKIP %s:%s reason=%s patterns=%s candles=%s", chain, address[:8], issue or "no_positive_pattern", patterns, len(candles))
-                        continue
-                    qualified += 1
-                    score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
+                    # Swing7 cannot confirm its chart-pattern thesis without OHLCV.
+                    # Fail closed rather than silently replacing it with an untested strategy.
+                    logging.info("SWING7 SKIP %s:%s reason=pattern_strategy_disabled_no_OHLCV", chain, address[:8])
+                    continue
                     key = chain + ":" + address
                     with LOCK:
                         if key in ACCOUNT.positions:
@@ -359,10 +334,9 @@ def signal_worker():
                     price=valid_price(signal.get("price"))
                     liquidity=valid_price(signal.get("liquidity"))
                     # External OHLCV request outside the account lock.
-                    entry_candles = fetch_minute_candles(signal["address"]) if chain == "sol" else []
-                    entry_patterns = classify_candles(entry_candles)
+                    entry_patterns = []  # Chart patterns not evaluated without OHLCV.
                     observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
-                    confirmed_price, entry_issue = assess_paper_entry(signal, entry_candles, observation)
+                    confirmed_price, entry_issue = assess_paper_entry(signal, observation)
                     reason=None
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
@@ -377,15 +351,13 @@ def signal_worker():
                             reason=entry_issue
                         elif key in ACCOUNT.positions:
                             reason="posição já aberta"
-                        elif "venda_forte_volume_elevado" in entry_patterns or "queda_25pct_do_pico" in entry_patterns:
-                            reason="OHLCV: pressão vendedora ou queda acentuada antes da entrada"
                         else:
                             try:
                                 event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
                                 LAST_PRICES[key]=confirmed_price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
-                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço, liquidez e velas","timestamp":datetime.now(timezone.utc).isoformat()})
+                                MARKET.setdefault("paper_decisions",[]).append({"token":key,"result":"comprado","reason":"Radar e confirmação de preço e liquidez spot; sem validação de velas","timestamp":datetime.now(timezone.utc).isoformat()})
                                 SIGNAL_STATS["bought"] += 1
                                 logging.info("PAPER BUY from Telegram Radar %s: %s entry_at=%s entry_price=%s migration_status=%s migration_age_minutes=%s score=%s",key,event,event.get("timestamp"),event.get("entry_price"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),signal.get("score"))
                                 save()
