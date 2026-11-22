@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_market_cap, fetch_market_observation
 from app.trading.paper import PaperAccount
 from app.trading.adaptive import evaluate as evaluate_learning
+from app.trading.spot_monitor import record as record_spot, analyze as analyze_spot
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_url=None)
@@ -140,6 +141,9 @@ def poll():
             # monitors open positions frequently and independently.
             LAST_PRICES.update(current)
             for t in tokens:
+                if valid_price(t.get("price")):
+                    record_spot(t["chain"], t["address"], t["price"], t.get("volume_1h"))
+            for t in tokens:
                 mc=valid_price(t.get("market_cap"))
                 if mc: LAST_MARKET_CAPS[t["chain"]+":"+t["address"]]=mc
             # Conservative Telegram-inspired screening;
@@ -149,6 +153,33 @@ def poll():
         logging.info("GMGN RANK cycle finished elapsed=%.1fs tokens=%s next_in=%.1fs", elapsed, len(tokens), max(0, 300 - elapsed))
         time.sleep(max(0, 300 - elapsed))
 
+
+
+def monitor_spot_prices():
+    """Observe at most four ranked tokens per minute; no automatic paper entries."""
+    cursor = 0
+    while True:
+        started = time.monotonic()
+        try:
+            with LOCK:
+                ranked = list(MARKET.get("tokens") or [])
+            # Round-robin rather than hammering the same token.
+            watch = [t for t in ranked if t.get("chain") in ("sol", "eth") and t.get("address")]
+            if watch:
+                batch = [watch[(cursor + i) % len(watch)] for i in range(min(4, len(watch)))]
+                cursor = (cursor + len(batch)) % len(watch)
+                for token in batch:
+                    chain, address = token["chain"], token["address"]
+                    observation = fetch_market_observation(chain, address)
+                    if not observation:
+                        logging.info("SPOT MONITOR unavailable %s:%s", chain, address[:8])
+                        continue
+                    result = record_spot(chain, address, observation.get("price"), token.get("volume_1h"))
+                    if result:
+                        logging.info("SPOT MONITOR %s:%s %s", chain, address[:8], result)
+        except Exception:
+            logging.exception("SPOT MONITOR error")
+        time.sleep(max(0, 60 - (time.monotonic() - started)))
 
 
 def monitor_exits():
@@ -167,6 +198,7 @@ def monitor_exits():
                     if price is None:
                         logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
+                    record_spot(chain, address, price)
                     candle_patterns = []  # No OHLCV source: never invent candle patterns.
                     if candle_patterns:
                         observation = dict(observation or {}, candle_patterns=candle_patterns)
@@ -337,6 +369,9 @@ def signal_worker():
                     entry_patterns = []  # Chart patterns not evaluated without OHLCV.
                     observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
                     confirmed_price, entry_issue = assess_paper_entry(signal, observation)
+                    if confirmed_price:
+                        record_spot(chain, signal["address"], confirmed_price)
+                        logging.info("SPOT ENTRY HISTORY %s %s", key, analyze_spot(chain, signal["address"]))
                     reason=None
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
@@ -391,6 +426,7 @@ def startup():
     threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
     threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
     threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
+    threading.Thread(target=monitor_spot_prices, daemon=True, name="spot-monitor").start()
 
 @app.middleware("http")
 async def headers(request, call_next):
