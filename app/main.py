@@ -394,7 +394,7 @@ def signal_worker():
                     liquidity=valid_price(signal.get("liquidity"))
                     # External OHLCV request outside the account lock.
                     entry_patterns = []  # Chart patterns not evaluated without OHLCV.
-                    observation = fetch_market_observation(chain, signal["address"]) if chain == "sol" else None
+                    observation = fetch_market_observation(chain, signal["address"]) if chain in ("sol", "eth") else None
                     confirmed_price, entry_issue = assess_paper_entry(signal, observation)
                     if confirmed_price:
                         record_spot(chain, signal["address"], confirmed_price)
@@ -403,7 +403,7 @@ def signal_worker():
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
                             reason="sinal expirado"
-                        elif chain != "sol":
+                        elif chain not in ("sol", "eth"):
                             reason="rede não habilitada"
                         elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"] < signal["score"] <= 100):
                             reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]
