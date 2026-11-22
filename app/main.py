@@ -278,8 +278,6 @@ def assess_paper_entry(signal, observation):
     liquidity = valid_price((observation or {}).get("liquidity"))
     if not quote or not signal_price:
         return None, "cotação atual indisponível; entrada adiada"
-    if abs(quote / signal_price - 1) > 0.12:
-        return None, "cotação mudou mais de 12% desde o sinal"
     if liquidity is None or liquidity < 12000:
         return None, "liquidez atual insuficiente ou não verificada (mínimo US$ 12 mil)"
     buy_vol = (observation or {}).get("buy_volume_1m")
