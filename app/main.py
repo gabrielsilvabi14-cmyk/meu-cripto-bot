@@ -248,7 +248,6 @@ def assess_paper_entry(signal, candles, observation):
 
 def swing_week_worker():
     """Independent 1-7 day Pump.fun paper strategy with validated entry checks."""
-    attempted = set()
     while True:
         started = time.monotonic()
         checked = 0
@@ -281,15 +280,30 @@ def swing_week_worker():
                 patterns = classify_candles(candles)
                 signal = {"price": price}
                 quote, issue = assess_paper_entry(signal, candles, snapshot)
-                if issue or not patterns or any(p in patterns for p in ("venda_forte_volume_elevado", "queda_25pct_do_pico")):
+                reversal = "reversao_apos_queda" in patterns
+                positive = {"rompimento_com_volume", "acumulacao_gradual_volume_crescente", "reversao_apos_queda"}
+                if issue or not positive.intersection(patterns) or "venda_forte_volume_elevado" in patterns or ("queda_25pct_do_pico" in patterns and not reversal):
                     logging.info("SWING7 SKIP sol:%s reason=%s patterns=%s", address[:8], issue or "no_positive_pattern", patterns)
                     continue
                 qualified += 1
-                score = 85 if "rompimento_com_volume" in patterns else 75
+                score = 85 if "rompimento_com_volume" in patterns else (80 if reversal else 75)
                 key = "sol:" + address
                 with LOCK:
-                    if key in ACCOUNT.positions or key in attempted or any(e.get("action") == "PAPER_BUY" and e.get("token") == key for e in ACCOUNT.events):
-                        logging.info("SWING7 SKIP %s already_traded_or_open", key)
+                    if key in ACCOUNT.positions:
+                        logging.info("SWING7 SKIP %s position_already_open", key)
+                        continue
+                    recent_buy = False
+                    for past in reversed(ACCOUNT.events):
+                        if past.get("action") != "PAPER_BUY" or past.get("token") != key:
+                            continue
+                        try:
+                            purchased_at = datetime.fromisoformat(past["timestamp"].replace("Z", "+00:00"))
+                            recent_buy = (datetime.now(timezone.utc) - purchased_at).total_seconds() < 3600
+                        except (KeyError, TypeError, ValueError):
+                            recent_buy = True
+                        break
+                    if recent_buy:
+                        logging.info("SWING7 SKIP %s one_hour_reentry_cooldown", key)
                         continue
                     if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
                         logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
@@ -298,7 +312,6 @@ def swing_week_worker():
                         event = buy_every_alert(key, "sol", quote, valid_price(t.get("market_cap")), score,
                                                 migration_status="pumpfun_origin_confirmed_migration_time_unknown",
                                                 migration_age_minutes=None, entry_patterns=patterns)
-                        attempted.add(key)
                         LAST_PRICES[key] = quote
                         bought += 1
                         SIGNAL_STATS["bought"] += 1
