@@ -46,6 +46,26 @@ async function refresh(){
  try{
   const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
   const d=await r.json(),m=d.market||{},tokens=m.tokens||[],positions=d.positions||[],trades=d.trades||[];
+  let networkBox=$('network-breakdown');
+  if(!networkBox){
+   networkBox=node('section','','card');networkBox.id='network-breakdown';
+   $('positions').closest('section').before(networkBox);
+  }
+  networkBox.replaceChildren(node('h2','Desempenho por rede'),node('p','Capital compartilhado; resultados e entradas separados.','hint'));
+  for(const chain of ['sol','eth']){
+   const events=trades.filter(t=>splitToken(t.token)[0]===chain);
+   const buys=events.filter(t=>t.action==='PAPER_BUY');
+   const sells=events.filter(t=>t.action==='PAPER_SELL');
+   const net=sells.reduce((a,t)=>a+(Number(t.realized_pnl_usd)||0),0);
+   const section=node('details','','details');
+   section.append(node('summary',(chain==='sol'?'Solana':'Ethereum')+' · '+buys.length+' compras · '+usd(net)));
+   section.append(node('p','Posições abertas: '+positions.filter(p=>splitToken(p.token)[0]===chain).length+' · Vendas (inclui parciais): '+sells.length,'hint'));
+   const learningNetwork=d.by_network?.[chain]?.learning;
+   if(learningNetwork)section.append(node('p','Pontuação mínima: acima de '+learningNetwork.minimum_score_exclusive,'hint'));
+   const networkMeta=new Map(tokens.map(t=>[t.chain+':'+t.address,t]));
+   for(const t of events.slice().reverse())renderTrade(section,t,networkMeta);
+   networkBox.append(section);
+  }
   const learning=d.learning||{};
   setValue('learning-mode',learning.mode==='adaptive'?'Filtro adaptativo ativo':'Aprendendo');
   setValue('learning-count',String(learning.trades_analyzed??0)+' / '+String(learning.minimum_trades_for_review??40));
