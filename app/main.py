@@ -246,6 +246,51 @@ def assess_paper_entry(signal, candles, observation):
     return quote, None
 
 
+def swing_week_worker():
+    """Separate 1-7 day Pump.fun candidate discovery; no unverified simulated purchases."""
+    while True:
+        started = time.monotonic()
+        checked = 0
+        qualified = 0
+        try:
+            from app.integrations.gmgn import fetch_token_snapshot
+            candidates = fetch_rank("sol", interval="1h", limit=100)
+            for t in candidates:
+                age = valid_price(t.get("age_hours"))
+                if age is None or not 24 <= age <= 168:
+                    continue
+                checked += 1
+                address = t.get("address")
+                if not address:
+                    continue
+                snapshot = fetch_token_snapshot("sol", address)
+                # GMGN ranking and token-address suffix are not proof of origin.
+                # Only explicit Pump.fun launchpad metadata can authorize a trade.
+                origin = str((snapshot or {}).get("launchpad_status") or "").lower()
+                if origin not in ("pump.fun", "pumpfun", "pump_fun"):
+                    logging.info("SWING7 SKIP sol:%s origin_not_verified status=%s", address[:8], origin[:32])
+                    continue
+                liquidity = valid_price((snapshot or {}).get("liquidity"))
+                price = valid_price((snapshot or {}).get("price"))
+                if not liquidity or liquidity < 20000 or not price:
+                    logging.info("SWING7 SKIP sol:%s liquidity_or_price_unavailable", address[:8])
+                    continue
+                candles = fetch_minute_candles(address)
+                patterns = classify_candles(candles)
+                signal = {"price": price}
+                quote, issue = assess_paper_entry(signal, candles, snapshot)
+                if issue or not patterns or any(p in patterns for p in ("venda_forte_volume_elevado", "queda_25pct_do_pico")):
+                    logging.info("SWING7 SKIP sol:%s reason=%s patterns=%s", address[:8], issue or "no_positive_pattern", patterns)
+                    continue
+                qualified += 1
+                # Watchlist only until age, provenance and scoring are validated end-to-end.
+                logging.info("SWING7 VERIFIED_CANDIDATE sol:%s age_h=%.1f patterns=%s price=%s", address[:8], age, patterns, quote)
+            logging.info("SWING7 discovery cycle finished candidates_1to7d=%s verified=%s elapsed=%.1fs", checked, qualified, time.monotonic()-started)
+        except Exception:
+            logging.exception("SWING7 discovery error")
+        time.sleep(max(0, 900 - (time.monotonic()-started)))
+
+
 def signal_worker():
     """Read Telegram-approved signals promptly and explain every paper decision."""
     global RADAR_SIGNAL_OFFSET
@@ -324,6 +369,7 @@ def startup():
         logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
     threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
     threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
+    threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
     threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
 
 @app.middleware("http")
