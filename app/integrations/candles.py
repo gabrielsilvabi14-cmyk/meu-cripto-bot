@@ -14,6 +14,7 @@ _NEXT_REQUEST = 0.0
 _COOLDOWN_UNTIL = 0.0
 _RATE_LIMIT_STREAK = 0
 _LAST_429_AT = 0.0
+_METRICS = {"requests": 0, "http_429": 0, "cache_hits": 0, "successful_candles": 0}
 
 class RateLimited(Exception):
     pass
@@ -29,7 +30,8 @@ def _get(url):
         wait = max(0.0, _NEXT_REQUEST - now)
         if wait:
             time.sleep(wait)
-        _NEXT_REQUEST = time.monotonic() + 3.0
+        _NEXT_REQUEST = time.monotonic() + 12.0
+        _METRICS["requests"] += 1
     try:
         with urlopen(Request(url, headers=HEADERS), timeout=7) as response:
             payload = json.load(response)
@@ -49,6 +51,7 @@ def _get(url):
                 _LAST_429_AT = current
                 delay = max(delay, min(900.0, 60.0 * (2 ** min(_RATE_LIMIT_STREAK - 1, 4))))
                 _COOLDOWN_UNTIL = max(_COOLDOWN_UNTIL, current + delay)
+            _METRICS["http_429"] += 1
             logging.warning("OHLCV HTTP 429: cooldown %.0fs streak=%s", delay, _RATE_LIMIT_STREAK)
             raise RateLimited("HTTP 429") from exc
         raise
@@ -60,7 +63,9 @@ def fetch_minute_candles(address, limit=40, chain="sol"):
     now = time.monotonic()
     with _LOCK:
         cached = _CACHE.get((chain, address))
-    if cached and now - cached[0] < (30 if cached[1] else 30):
+    if cached and now - cached[0] < (75 if cached[1] else 180):
+        with _LOCK:
+            _METRICS["cache_hits"] += 1
         return cached[1]
     candles = []
     failed = False
@@ -112,6 +117,8 @@ def fetch_minute_candles(address, limit=40, chain="sol"):
     with _LOCK:
         if not failed:
             _CACHE[(chain, address)] = (time.monotonic(), candles)
+            if candles:
+                _METRICS["successful_candles"] += 1
         if len(_CACHE) > 400:
             _CACHE.clear()
         if len(_POOL_CACHE) > 400:
@@ -141,3 +148,9 @@ def classify(candles):
     if last["close"] < last["open"] * 0.85 and last["volume"] > sum(vols[:-1]) / 7 * 2:
         patterns.append("venda_forte_volume_elevado")
     return patterns
+
+
+def ohlcv_metrics():
+    """Thread-safe diagnostic counters; excludes API credentials."""
+    with _LOCK:
+        return dict(_METRICS, cooldown_seconds=max(0, round(_COOLDOWN_UNTIL-time.monotonic())))
