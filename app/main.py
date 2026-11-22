@@ -17,6 +17,7 @@ from app.integrations.gmgn import fetch_rank, fetch_token_price, fetch_token_mar
 from app.trading.paper import PaperAccount
 from app.trading.adaptive import evaluate as evaluate_learning
 from app.trading.spot_monitor import record as record_spot, analyze as analyze_spot
+from app.integrations.candles import fetch_minute_candles, classify as classify_candles, ohlcv_metrics
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="GMGN Trader Paper", docs_url=None, redoc_url=None, openapi_url=None)
@@ -180,6 +181,34 @@ def monitor_spot_prices():
         except Exception:
             logging.exception("SPOT MONITOR error")
         time.sleep(max(0, 60 - (time.monotonic() - started)))
+
+
+def monitor_ohlcv():
+    """Low-frequency, observational OHLCV on top GMGN candidates only."""
+    while True:
+        started = time.monotonic()
+        try:
+            with LOCK:
+                ranked = list(MARKET.get("tokens") or [])
+            # One candidate per network, not every token; each needs a valid price
+            # and sufficient reported liquidity before spending public API quota.
+            candidates = []
+            for chain in ("sol", "eth"):
+                selected = next((t for t in ranked if t.get("chain") == chain
+                                 and t.get("address") and valid_price(t.get("price"))
+                                 and (valid_price(t.get("liquidity")) or 0) >= 20000), None)
+                if selected:
+                    candidates.append(selected)
+            for token in candidates:
+                chain, address = token["chain"], token["address"]
+                candles = fetch_minute_candles(address, limit=20, chain=chain)
+                patterns = classify_candles(candles)
+                logging.info("OHLCV OBSERVE %s:%s closed_candles=%s patterns=%s metrics=%s",
+                             chain, address[:8], len(candles), patterns, ohlcv_metrics())
+        except Exception:
+            logging.exception("OHLCV monitor failed")
+        # Wait for new minute-close, without polling every second.
+        time.sleep(max(0, 120 - (time.monotonic() - started)))
 
 
 def monitor_exits():
@@ -427,6 +456,7 @@ def startup():
     threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
     threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
     threading.Thread(target=monitor_spot_prices, daemon=True, name="spot-monitor").start()
+    threading.Thread(target=monitor_ohlcv, daemon=True, name="ohlcv-observer").start()
 
 @app.middleware("http")
 async def headers(request, call_next):
