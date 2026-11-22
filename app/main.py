@@ -247,11 +247,13 @@ def assess_paper_entry(signal, candles, observation):
 
 
 def swing_week_worker():
-    """Separate 1-7 day Pump.fun candidate discovery; no unverified simulated purchases."""
+    """Independent 1-7 day Pump.fun paper strategy with validated entry checks."""
+    attempted = set()
     while True:
         started = time.monotonic()
         checked = 0
         qualified = 0
+        bought = 0
         try:
             from app.integrations.gmgn import fetch_token_snapshot
             candidates = fetch_rank("sol", interval="1h", limit=100)
@@ -283,9 +285,34 @@ def swing_week_worker():
                     logging.info("SWING7 SKIP sol:%s reason=%s patterns=%s", address[:8], issue or "no_positive_pattern", patterns)
                     continue
                 qualified += 1
-                # Watchlist only until age, provenance and scoring are validated end-to-end.
+                score = 85 if "rompimento_com_volume" in patterns else 75
+                key = "sol:" + address
+                with LOCK:
+                    if key in ACCOUNT.positions or key in attempted or any(e.get("action") == "PAPER_BUY" and e.get("token") == key for e in ACCOUNT.events):
+                        logging.info("SWING7 SKIP %s already_traded_or_open", key)
+                        continue
+                    if score <= evaluate_learning(ACCOUNT.events)["minimum_score_exclusive"]:
+                        logging.info("SWING7 SKIP %s score_below_adaptive_minimum score=%s", key, score)
+                        continue
+                    try:
+                        event = buy_every_alert(key, "sol", quote, valid_price(t.get("market_cap")), score,
+                                                migration_status="pumpfun_origin_confirmed_migration_time_unknown",
+                                                migration_age_minutes=None, entry_patterns=patterns)
+                        attempted.add(key)
+                        LAST_PRICES[key] = quote
+                        bought += 1
+                        SIGNAL_STATS["bought"] += 1
+                        MARKET.setdefault("paper_decisions", []).append({
+                            "token": key, "result": "comprado", "strategy": "swing7",
+                            "reason": "Swing 7 dias: origem, liquidez, cotacao e OHLCV validados",
+                            "timestamp": datetime.now(timezone.utc).isoformat()})
+                        MARKET["paper_decisions"] = MARKET["paper_decisions"][-80:]
+                        save()
+                        logging.info("SWING7 PAPER BUY %s age_h=%.1f score=%s patterns=%s event=%s", key, age, score, patterns, event)
+                    except (ValueError, KeyError) as exc:
+                        logging.info("SWING7 SKIP %s reason=%s", key, str(exc))
                 logging.info("SWING7 VERIFIED_CANDIDATE sol:%s age_h=%.1f patterns=%s price=%s", address[:8], age, patterns, quote)
-            logging.info("SWING7 discovery cycle finished candidates_1to7d=%s verified=%s elapsed=%.1fs", checked, qualified, time.monotonic()-started)
+            logging.info("SWING7 cycle finished candidates_1to7d=%s verified=%s bought=%s elapsed=%.1fs", checked, qualified, bought, time.monotonic()-started)
         except Exception:
             logging.exception("SWING7 discovery error")
         time.sleep(max(0, 900 - (time.monotonic()-started)))
