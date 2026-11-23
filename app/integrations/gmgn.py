@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -96,6 +97,26 @@ def fetch_rank(chain: str, interval: str = "5m", limit: int = 20) -> list[dict]:
 
 _GMGN_INFO_BACKOFF_UNTIL = 0.0
 _GMGN_INFO_WARNED = False
+_GECKO_LOCK = threading.Lock()
+_GECKO_NEXT = 0.0
+
+def gecko_slot():
+    global _GECKO_NEXT
+    with _GECKO_LOCK:
+        now = time.monotonic()
+        if now < _GECKO_NEXT:
+            return False
+        _GECKO_NEXT = now + 12
+        return True
+
+def gecko_cooldown(headers):
+    global _GECKO_NEXT
+    try:
+        delay = max(60, float(headers.get("Retry-After", "60")))
+    except (ValueError, TypeError, AttributeError):
+        delay = 60
+    with _GECKO_LOCK:
+        _GECKO_NEXT = max(_GECKO_NEXT, time.monotonic() + delay)
 
 def _number(value):
     try:
@@ -178,8 +199,8 @@ def fetch_token_snapshot(chain: str, address: str) -> dict | None:
             note_rate_limit(exc.headers)
             _GMGN_INFO_BACKOFF_UNTIL = time.monotonic() + 120
         elif exc.code in (401, 403):
-            _GMGN_INFO_BACKOFF_UNTIL = time.monotonic() + 600
-        if not _GMGN_INFO_WARNED:
+            _GMGN_INFO_BACKOFF_UNTIL = time.monotonic() + 1800
+        if not _GMGN_INFO_WARNED or exc.code in (401, 403):
             logging.warning("GMGN token/info HTTP %s; fallback DexScreener, retry after cooldown (verify Agent API auth/permissions)", exc.code)
             _GMGN_INFO_WARNED = True
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
@@ -220,6 +241,8 @@ def _geckoterminal_spot(chain: str, address: str) -> dict | None:
     """Independent Solana spot quote from GeckoTerminal's public token endpoint."""
     if chain not in ("sol", "eth"):
         return None
+    if not gecko_slot():
+        return None
     try:
         req = Request("https://api.geckoterminal.com/api/v2/networks/" + ("eth" if chain == "eth" else "solana") + "/tokens/" + address,
                       headers={"Accept": "application/json;version=20230302", "User-Agent": "Mozilla/5.0"})
@@ -234,7 +257,9 @@ def _geckoterminal_spot(chain: str, address: str) -> dict | None:
             logging.info("PAPER PRICE source=geckoterminal %s:%s price_usd=%.12g", chain, address[:8], price)
             return {"price": price, "source": "geckoterminal"}
     except HTTPError as exc:
-        logging.warning("GeckoTerminal HTTP %s for sol:%s", exc.code, address[:8])
+        if exc.code == 429:
+            gecko_cooldown(exc.headers)
+        logging.warning("GeckoTerminal HTTP %s for %s:%s", exc.code, chain, address[:8])
     except (URLError, TimeoutError, ValueError, TypeError) as exc:
         logging.warning("GeckoTerminal %s for sol:%s", type(exc).__name__, address[:8])
     return None
@@ -247,7 +272,7 @@ def fetch_token_price(chain: str, address: str) -> float | None:
 
 def fetch_token_market_cap(chain: str, address: str) -> float | None:
     """Get reported market cap, never substitute FDV for circulating market cap."""
-    if chain not in ("sol","eth") or not address:
+    if chain not in ("sol","eth") or not address or time.monotonic() < _GMGN_INFO_BACKOFF_UNTIL:
         return None
     key=os.environ.get("GMGN_API_KEY","").strip()
     if not key:
