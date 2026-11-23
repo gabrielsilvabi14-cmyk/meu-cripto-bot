@@ -212,6 +212,58 @@ def monitor_ohlcv():
         time.sleep(max(0, 900 - (time.monotonic() - started)))
 
 
+def monitor_post_exit():
+    """Bounded 30-minute counterfactual observation; never places orders."""
+    watched = {}
+    seen = set()
+    while True:
+        started = time.monotonic()
+        try:
+            with LOCK:
+                events = list(ACCOUNT.events[-200:])
+            now = time.time()
+            for event in events:
+                if event.get("action") != "PAPER_SELL" or event.get("fraction") != 1:
+                    continue
+                key = event.get("token")
+                stamp = event.get("timestamp")
+                try:
+                    age = now - datetime.fromisoformat(stamp).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                identity = (key, stamp)
+                if not key or not 0 <= age < 1800 or identity in seen or len(watched) >= 6:
+                    continue
+                base = valid_price(event.get("observed_price"))
+                if not base:
+                    continue
+                seen.add(identity)
+                watched[identity] = {"base": base, "peak": base, "low": base, "last": None, "samples": 0, "until": now + 1800 - age}
+            for identity, item in list(watched.items()):
+                key, stamp = identity
+                if time.time() >= item["until"]:
+                    logging.info("POST EXIT REVIEW %s exit_at=%s samples=%s peak_change_pct=%s low_change_pct=%s last_change_pct=%s",
+                                 key, stamp, item["samples"],
+                                 round(100*(item["peak"]/item["base"]-1), 2) if item["samples"] else None,
+                                 round(100*(item["low"]/item["base"]-1), 2) if item["samples"] else None,
+                                 round(100*(item["last"]/item["base"]-1), 2) if item["last"] else None)
+                    del watched[identity]
+                    continue
+                chain, address = key.split(":", 1)
+                observation = fetch_market_observation(chain, address)
+                price = valid_price((observation or {}).get("price"))
+                if price:
+                    item["peak"] = max(item["peak"], price)
+                    item["low"] = min(item["low"], price)
+                    item["last"] = price
+                    item["samples"] += 1
+            if len(seen) > 1000:
+                seen = set(watched)
+        except Exception:
+            logging.exception("POST EXIT monitor failed")
+        time.sleep(max(0, 300 - (time.monotonic()-started)))
+
+
 def monitor_exits():
     """Check live indicative spot prices repeatedly; no candle-close dependency."""
     interval = 60.0
@@ -503,6 +555,7 @@ def startup():
     threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
     threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
     threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
+    threading.Thread(target=monitor_post_exit, daemon=True, name="post-exit").start()
     threading.Thread(target=monitor_spot_prices, daemon=True, name="spot-monitor").start()
     threading.Thread(target=monitor_ohlcv, daemon=True, name="ohlcv-observer").start()
 
