@@ -116,7 +116,7 @@ def poll():
         with LOCK:
             MARKET["phase"] = "consultando GMGN"
             MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
-        for chain in ("sol", "eth"):
+        for chain in ("sol",):
             try:
                 found = fetch_rank(chain, limit=100)
                 tokens.extend(found)
@@ -166,7 +166,7 @@ def monitor_spot_prices():
             # Track a stable, bounded watchlist: two top-ranked per network.
             # Repeated minute observations are required for 5/10/15m comparisons.
             batch = []
-            for chain in ("sol", "eth"):
+            for chain in ("sol",):
                 batch.extend([t for t in ranked if t.get("chain") == chain and t.get("address") and valid_price(t.get("price")) and (valid_price(t.get("liquidity")) or 0) >= 12000][:2])
             if batch:
                 for token in batch:
@@ -193,7 +193,7 @@ def monitor_ohlcv():
             # One candidate per network, not every token; each needs a valid price
             # and sufficient reported liquidity before spending public API quota.
             candidates = []
-            for chain in ("sol", "eth"):
+            for chain in ("sol",):
                 selected = next((t for t in ranked if t.get("chain") == chain
                                  and t.get("address") and valid_price(t.get("price"))
                                  and (valid_price(t.get("liquidity")) or 0) >= 20000), None)
@@ -349,7 +349,7 @@ def swing_week_worker():
         bought = 0
         try:
             from app.integrations.gmgn import fetch_token_snapshot
-            for chain in ("sol", "eth"):
+            for chain in ("sol",):
                 candidates = fetch_rank(chain, interval="1h", limit=100)
                 for t in candidates:
                     age = valid_price(t.get("age_hours"))
@@ -475,7 +475,7 @@ def signal_worker():
                         SIGNAL_STATS["received"] += 1
                         SIGNAL_STATS["skipped"] += 1
                         continue
-                    first = fetch_market_observation(candidate_chain, candidate["address"]) if candidate_chain in ("sol", "eth") else None
+                    first = fetch_market_observation(candidate_chain, candidate["address"]) if candidate_chain == "sol" else None
                     _, issue = assess_paper_entry(candidate, first)
                     pending[candidate_key] = (candidate, first, time.monotonic() + (0 if issue else 60), issue)
                     logging.info("PAPER WATCH %s initial_issue=%s", candidate_key, issue)
@@ -493,7 +493,7 @@ def signal_worker():
                     liquidity=valid_price(signal.get("liquidity"))
                     # External OHLCV request outside the account lock.
                     entry_patterns = []  # Chart patterns not evaluated without OHLCV.
-                    observation = fetch_market_observation(chain, signal["address"]) if not initial_issue and chain in ("sol", "eth") else None
+                    observation = fetch_market_observation(chain, signal["address"]) if not initial_issue and chain == "sol" else None
                     confirmed_price, entry_issue = (None, initial_issue) if initial_issue else confirm_entry_samples(signal, first, observation)
                     logging.info("PAPER WATCH RESULT %s first=%s latest=%s issue=%s", key,
                                  {k: (first or {}).get(k) for k in ("price", "liquidity", "buy_volume_1m", "sell_volume_1m", "source")},
@@ -505,7 +505,7 @@ def signal_worker():
                     with LOCK:
                         if time.time()-float(signal.get("timestamp",0))>86400:
                             reason="sinal expirado"
-                        elif chain not in ("sol", "eth"):
+                        elif chain != "sol":
                             reason="rede não habilitada"
                         elif not isinstance(signal.get("score"), (int, float)) or isinstance(signal.get("score"), bool) or not (evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])["minimum_score_exclusive"] < signal["score"] <= 100):
                             reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])["minimum_score_exclusive"]
