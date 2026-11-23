@@ -62,8 +62,10 @@ def restore():
         ACCOUNT.cash_usd = float(d["cash"])
         ACCOUNT.positions = {k: Position(**v) for k, v in d["positions"].items()}
         ACCOUNT.events = d["events"]
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logging.warning("Paper snapshot restore unavailable: %s; path=%s", type(exc).__name__, STATE_FILE)
+    else:
+        logging.info("Paper snapshot restored positions=%s events=%s", len(ACCOUNT.positions), len(ACCOUNT.events))
 
 def save():
     from dataclasses import asdict
@@ -321,6 +323,10 @@ def monitor_exits():
         finally:
             EXIT_PRIORITY.clear()
         elapsed = time.monotonic() - cycle_started
+        # Faster checks only while exposed; scale interval with position count.
+        with LOCK:
+            active_count = len(ACCOUNT.positions)
+        interval = max(15.0, active_count * 12.0) if active_count else 60.0
         wait_seconds = max(0, interval - elapsed)
         logging.info("PAPER EXIT spot cycle finished positions=%s elapsed=%.1fs next_in=%.1fs",
                      len(keys) if "keys" in locals() else 0, elapsed, wait_seconds)
@@ -460,6 +466,8 @@ def confirm_entry_samples(signal, first, latest):
         return None, "liquidez caiu mais de 10% durante observação"
     if quote < initial:
         return None, "preço perdeu força durante observação"
+    if signal.get("score", 0) <= 65 and current_liquidity < initial_liquidity:
+        return None, "score baixo e liquidez perdeu força durante confirmação"
     buy, sell = latest.get("buy_volume_1m"), latest.get("sell_volume_1m")
     if isinstance(buy, (int, float)) and isinstance(sell, (int, float)) and buy <= sell:
         return None, "pressão compradora não confirmada na segunda observação"
@@ -542,6 +550,9 @@ def signal_worker():
                         else:
                             try:
                                 event=buy_every_alert(key,chain,confirmed_price,valid_price(signal.get('market_cap')),signal.get("score"),signal.get("migration_status","nao_verificada"),signal.get("migration_age_minutes"),entry_patterns=entry_patterns)
+                                ACCOUNT.positions[key].last_liquidity = valid_price(latest.get("liquidity"))
+                                event["entry_score"] = signal.get("score")
+                                event["entry_observation"] = {k: latest.get(k) for k in ("source", "liquidity", "buy_volume_1m", "sell_volume_1m")}
                                 LAST_PRICES[key]=confirmed_price
                                 if valid_price(signal.get('market_cap')):
                                     LAST_MARKET_CAPS[key]=valid_price(signal.get('market_cap'))
