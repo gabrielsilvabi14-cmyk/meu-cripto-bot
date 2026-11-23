@@ -30,6 +30,8 @@ class Position:
     observed_patterns: list = field(default_factory=list)
     entry_patterns: list = field(default_factory=list)
     candle_patterns: list = field(default_factory=list)
+    trailing_breaches: int = 0
+    last_liquidity: float | None = None
 
 @dataclass
 class PaperAccount:
@@ -95,6 +97,7 @@ class PaperAccount:
         pos = self.positions[token]
         self._valid(price)
         market = market or {}
+        prior_liquidity = pos.last_liquidity
         pos.last_market_signals = {k: market[k] for k in ("source", "liquidity", "buy_volume_1m", "sell_volume_1m", "top10_ratio", "bundler_ratio", "insider_ratio") if market.get(k) is not None}
         for pattern in market.get("candle_patterns", []) or []:
             if pattern not in pos.candle_patterns:
@@ -135,8 +138,15 @@ class PaperAccount:
         typical_move = sorted(moves)[len(moves)//2] if moves else 0.035
         risk_band = min(0.14, max(0.045, typical_move * 2.5))
         floor = pos.entry_price * (1 - risk_band)
+        recent_up = len(recent_prices) >= 3 and recent_prices[-1] >= recent_prices[-3]
+        buy_vol = market.get("buy_volume_1m")
+        sell_vol = market.get("sell_volume_1m")
+        pressure_known = isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float))
+        healthy = recent_up and pressure_known and buy_vol >= sell_vol
+        weakening = pressure_known and sell_vol > max(buy_vol, 1) * 1.4
+        pos.exit_strategy = "adaptive_v4_trend"
         if pos.peak_price > pos.entry_price * 1.06:
-            trail_band = min(0.16, max(0.05, typical_move * 2.2))
+            trail_band = min(0.22, max(0.10, typical_move * 3.0)) if healthy else min(0.18, max(0.08, typical_move * 2.5))
             floor = max(floor, pos.peak_price * (1 - trail_band))
         if pos.peak_price > pos.entry_price * 1.12:
             floor = max(floor, pos.entry_price * 1.015)
@@ -145,7 +155,9 @@ class PaperAccount:
         sell_vol = market.get("sell_volume_1m")
         liquidity = market.get("liquidity")
         severe_selling = (isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol >= 3000 and sell_vol > max(buy_vol, 1) * 3)
-        liquidity_crisis = isinstance(liquidity, (int, float)) and liquidity < 5000
+        liquidity_crisis = isinstance(liquidity, (int, float)) and (liquidity < 5000 or (prior_liquidity is not None and liquidity < prior_liquidity * 0.65))
+        if isinstance(liquidity, (int, float)) and isfinite(liquidity) and liquidity > 0:
+            pos.last_liquidity = liquidity
         if liquidity_crisis or severe_selling:
             pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
             return self.sell(token, price)
@@ -156,10 +168,16 @@ class PaperAccount:
             pos.partial_taken = True
             pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, pos.entry_price * 1.01)
             pos._exit_reason = "adaptive_partial_profit"
-            return self.sell(token, price, fraction=0.5)
+            fraction = 0.5 if weakening else (0.2 if healthy else 0.35)
+            return self.sell(token, price, fraction=fraction)
         if price <= pos.dynamic_stop_price:
-            pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 6 else "adaptive_risk_stop"
-            return self.sell(token, price)
+            pos.trailing_breaches += 1
+            # Never delay initial risk stop or a sharp drawdown.
+            if gain_pct < 6 or weakening or price < pos.dynamic_stop_price * 0.95 or pos.trailing_breaches >= 2 or price <= pos.entry_price:
+                pos._exit_reason = "adaptive_trailing_stop" if gain_pct >= 6 else "adaptive_risk_stop"
+                return self.sell(token, price)
+        else:
+            pos.trailing_breaches = 0
         # Strong negative momentum after a significant gain: protect the run.
         if (previous is not None and gain_pct >= 20
                 and price < previous * 0.90 and price < pos.peak_price * 0.90):
