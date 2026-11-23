@@ -32,6 +32,8 @@ STATE_FILE = Path(os.getenv("PAPER_STATE_FILE", "/tmp/gmgn_paper_state.json"))
 MARKET = {"connected": False, "last_check": None, "last_success": None, "errors": {},
           "tokens": [], "cycles": 0, "phase": "iniciando", "chain_status": {}, "paper_enabled": True, "paper_note": "Simulação com preços indicativos, taxas e slippage estimados."}
 LAST_PRICES = {}
+EXIT_PRIORITY = threading.Event()
+EXIT_QUOTE_FAILURE = threading.Event()
 LAST_MARKET_CAPS = {}
 RADAR_PROCESS = None
 RADAR_SIGNAL_FILE = Path(os.getenv('RADAR_SIGNAL_FILE','/tmp/gmgn_radar_signals.jsonl'))
@@ -168,14 +170,16 @@ def monitor_spot_prices():
             batch = []
             for chain in ("sol",):
                 batch.extend([t for t in ranked if t.get("chain") == chain and t.get("address") and valid_price(t.get("price")) and (valid_price(t.get("liquidity")) or 0) >= 12000][:2])
-            if batch:
+            if batch and not EXIT_PRIORITY.is_set() and not EXIT_QUOTE_FAILURE.is_set():
                 for token in batch:
+                    if EXIT_PRIORITY.is_set() or EXIT_QUOTE_FAILURE.is_set():
+                        break
                     chain, address = token["chain"], token["address"]
                     observation = fetch_market_observation(chain, address)
                     if not observation:
                         logging.info("SPOT MONITOR unavailable %s:%s", chain, address[:8])
                         continue
-                    result = record_spot(chain, address, observation.get("price"), token.get("volume_1h"))
+                    result = record_spot(chain, address, observation.get("price"), observation.get("volume_1h"))
                     if result:
                         logging.info("SPOT MONITOR %s:%s %s", chain, address[:8], result)
         except Exception:
@@ -200,6 +204,9 @@ def monitor_ohlcv():
                 if selected:
                     candidates.append(selected)
             for token in candidates:
+                if EXIT_PRIORITY.is_set() or EXIT_QUOTE_FAILURE.is_set():
+                    logging.info("OHLCV deferred: exit quote priority")
+                    break
                 chain, address = token["chain"], token["address"]
                 candles = fetch_minute_candles(address, limit=20, chain=chain)
                 patterns = classify_candles(candles)
@@ -249,6 +256,8 @@ def monitor_post_exit():
                     del watched[identity]
                     continue
                 chain, address = key.split(":", 1)
+                if EXIT_PRIORITY.is_set() or EXIT_QUOTE_FAILURE.is_set():
+                    continue
                 observation = fetch_market_observation(chain, address)
                 price = valid_price((observation or {}).get("price"))
                 if price:
@@ -271,12 +280,16 @@ def monitor_exits():
         try:
             with LOCK:
                 keys = list(ACCOUNT.positions)
+            EXIT_PRIORITY.set()
+            quote_failed = False
             for key in keys:
                 try:
                     chain, address = key.split(":", 1)
                     observation = fetch_market_observation(chain, address)
                     price = valid_price(observation.get("price")) if observation else None
                     if price is None:
+                        quote_failed = True
+                        EXIT_QUOTE_FAILURE.set()
                         logging.warning("PAPER MARK unavailable %s; adaptive exit not evaluated, position remains unprotected", key)
                         continue
                     record_spot(chain, address, price)
@@ -297,9 +310,16 @@ def monitor_exits():
                                              event.get("migration_status"))
                                 save()
                 except Exception:
+                    quote_failed = True
+                    EXIT_QUOTE_FAILURE.set()
                     logging.exception("PAPER EXIT monitor error for %s", key)
+            if not quote_failed:
+                EXIT_QUOTE_FAILURE.clear()
         except Exception:
+            EXIT_QUOTE_FAILURE.set()
             logging.exception("PAPER EXIT monitor loop error")
+        finally:
+            EXIT_PRIORITY.clear()
         elapsed = time.monotonic() - cycle_started
         wait_seconds = max(0, interval - elapsed)
         logging.info("PAPER EXIT spot cycle finished positions=%s elapsed=%.1fs next_in=%.1fs",
@@ -440,6 +460,9 @@ def confirm_entry_samples(signal, first, latest):
         return None, "liquidez caiu mais de 10% durante observação"
     if quote < initial:
         return None, "preço perdeu força durante observação"
+    buy, sell = latest.get("buy_volume_1m"), latest.get("sell_volume_1m")
+    if isinstance(buy, (int, float)) and isinstance(sell, (int, float)) and buy <= sell:
+        return None, "pressão compradora não confirmada na segunda observação"
     for metric in ("top10_ratio", "sniper_ratio", "bundler_ratio"):
         value = latest.get(metric)
         if isinstance(value, (int, float)) and value >= 0.50:
@@ -510,6 +533,8 @@ def signal_worker():
                             reason="pontuação insuficiente: exige acima de %s/100 (aprendizado adaptativo)" % evaluate_learning([e for e in ACCOUNT.events if str(e.get("token", "")).startswith(chain + ":")])["minimum_score_exclusive"]
                         elif not price:
                             reason="preço inválido"
+                        elif EXIT_QUOTE_FAILURE.is_set() or EXIT_PRIORITY.is_set():
+                            reason="prioridade de proteção das posições abertas"
                         elif entry_issue:
                             reason=entry_issue
                         elif key in ACCOUNT.positions:
