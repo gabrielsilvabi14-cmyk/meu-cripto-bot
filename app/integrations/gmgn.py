@@ -281,7 +281,11 @@ def fetch_market_observation(chain: str, address: str) -> dict | None:
     if chain not in ("sol", "eth") or not address:
         return None
     for source in (fetch_token_snapshot, _dexscreener_spot, _geckoterminal_spot):
-        result = source(chain, address)
+        try:
+            result = source(chain, address)
+        except (HTTPError, URLError, TimeoutError, ValueError, TypeError, KeyError) as exc:
+            logging.warning("PAPER QUOTE source=%s token=%s:%s error=%s", source.__name__, chain, address[:8], type(exc).__name__)
+            continue
         if result is not None and _number(result.get("price")) is not None:
             return result
     logging.error("PAPER PRICE ALL SOURCES FAILED %s:%s; no synthetic exit price", chain, address[:8])
