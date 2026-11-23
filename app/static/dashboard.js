@@ -4,6 +4,16 @@ const usd=v=>typeof v==='number'&&Number.isFinite(v)?'US$ '+v.toLocaleString('pt
 const mc=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?'US$ '+v.toLocaleString('pt-BR',{maximumFractionDigits:0}):'Indisponível';
 const price=v=>typeof v==='number'&&Number.isFinite(v)&&v>0?'US$ '+v.toPrecision(6):'—';
 const pct=v=>typeof v==='number'&&Number.isFinite(v)?(v>=0?'+':'')+v.toFixed(2)+'%':'—';
+function tradeTime(v){
+ const d=v?new Date(v):null;
+ return d&&Number.isFinite(d.getTime())?d.toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',hour12:false}):'Não disponível';
+}
+function tradeDuration(start,end){
+ const a=start?Date.parse(start):NaN,b=end?Date.parse(end):NaN;
+ if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return 'Não disponível';
+ const seconds=Math.floor((b-a)/1000);
+ return Math.floor(seconds/3600)+'h '+Math.floor(seconds%3600/60)+'min '+seconds%60+'s';
+}
 function node(tag,value,cls){const n=document.createElement(tag);n.textContent=String(value??'');if(cls)n.className=cls;return n}
 function splitToken(s){const i=String(s||'').indexOf(':');return i<0?['','']:[s.slice(0,i),s.slice(i+1)]}
 function gmgnUrl(chain,address){
@@ -117,13 +127,26 @@ async function refresh(){
   const pos=$('positions');pos.replaceChildren();positions.forEach(p=>renderPosition(pos,p,meta));
   if(!positions.length)pos.textContent='Nenhuma posição aberta no momento.';
   const closedBox=$('closed-trades');closedBox.replaceChildren();
+  const activeEntries=new Map(), entryForSale=new Map();
+  for(const event of trades){
+   if(event.action==='PAPER_BUY')activeEntries.set(event.token,event);
+   if(event.action==='PAPER_SELL'){
+    entryForSale.set(event,activeEntries.get(event.token));
+    if(event.fraction===1)activeEntries.delete(event.token);
+   }
+  }
   for(const t of closed.slice().reverse()){
     const [chain,address]=splitToken(t.token);const known=meta.get(t.token)||{};const item=node('div','','token-row');
     item.append(node('strong',(known.symbol||'Token')+' · '+chain.toUpperCase()+' · '+(t.fraction===1?'Venda total':'Venda parcial')));
     const result=Number(t.realized_pnl_usd);const gain=Number.isFinite(result)&&result>=0;
     item.append(node('div',(gain?'Lucro: ':'Prejuízo: ')+usd(result)+' ('+(typeof t.realized_pnl_pct==='number'?pct(t.realized_pnl_pct):'percentual indisponível')+')','trade-result '+(gain?'positive':'negative')));
     item.append(node('small','Recebido: '+usd(t.net_usd)+' · Custo da parte vendida: '+usd(t.cost_basis_usd),'trade-meta'));
-    if(t.timestamp)item.append(node('small',new Date(t.timestamp).toLocaleString('pt-BR'),'trade-meta'));
+    const entry=entryForSale.get(t);
+    const entryTime=entry?.timestamp;
+    item.append(node('small','Entrada: '+tradeTime(entryTime)+' (Brasília)','trade-meta'));
+    item.append(node('small',(t.fraction===1?'Saída total: ':'Venda parcial: ')+tradeTime(t.timestamp)+' (Brasília)','trade-meta'));
+    item.append(node('small','Duração até esta venda: '+tradeDuration(entryTime,t.timestamp),'trade-meta'));
+    item.append(node('small','Pontuação: '+(t.entry_score??entry?.score??'Não disponível')+' · Motivo: '+(t.exit_reason||'Não informado'),'trade-meta'));
     contractLink(item,chain,address);openButton(item,chain,address);closedBox.append(item);
   }
   if(!closed.length)closedBox.textContent='Nenhuma operação fechada até agora.';
