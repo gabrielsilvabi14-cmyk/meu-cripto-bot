@@ -144,26 +144,36 @@ class PaperAccount:
         pressure_known = isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float))
         healthy = recent_up and pressure_known and buy_vol >= sell_vol
         weakening = pressure_known and sell_vol > max(buy_vol, 1) * 1.4
-        pos.exit_strategy = "adaptive_v4_trend"
+        pos.exit_strategy = "adaptive_v5_profit_guard"
         if pos.peak_price > pos.entry_price * 1.06:
             trail_band = min(0.22, max(0.10, typical_move * 3.0)) if healthy else min(0.18, max(0.08, typical_move * 2.5))
             floor = max(floor, pos.peak_price * (1 - trail_band))
         if pos.peak_price > pos.entry_price * 1.12:
-            floor = max(floor, pos.entry_price * 1.015)
+            floor = max(floor, pos.entry_price * (1.035 + max(0, gain_pct - 12) / 100 * 0.45))
         pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, floor)
         buy_vol = market.get("buy_volume_1m")
         sell_vol = market.get("sell_volume_1m")
         liquidity = market.get("liquidity")
         severe_selling = (isinstance(buy_vol, (int, float)) and isinstance(sell_vol, (int, float)) and sell_vol >= 3000 and sell_vol > max(buy_vol, 1) * 3)
-        liquidity_crisis = isinstance(liquidity, (int, float)) and (liquidity < 5000 or (prior_liquidity is not None and liquidity < prior_liquidity * 0.65))
+        liquidity_crisis = isinstance(liquidity, (int, float)) and (liquidity < 8000 or (prior_liquidity is not None and liquidity < prior_liquidity * 0.80))
         if isinstance(liquidity, (int, float)) and isfinite(liquidity) and liquidity > 0:
             pos.last_liquidity = liquidity
         if liquidity_crisis or severe_selling:
             pos._exit_reason = "adaptive_liquidity_risk" if liquidity_crisis else "adaptive_sell_pressure"
             return self.sell(token, price)
+        # Exit a breached protective floor before considering partial profit.
+        if price <= pos.dynamic_stop_price and (gain_pct >= 12 or price <= pos.entry_price):
+            pos._exit_reason = "adaptive_profit_guard" if gain_pct >= 12 else "adaptive_risk_stop"
+            return self.sell(token, price)
+        # Realize a portion of an observed gain before a reversal, net of costs.
+        net_return = price * (1 - self.slippage_pct / 100) * (1 - self.fee_pct / 100) * pos.quantity / pos.entry_cost_usd - 1
+        if not pos.partial_taken and net_return >= max(0.10, min(0.22, typical_move * 3)):
+            pos.partial_taken = True
+            pos._exit_reason = "adaptive_early_profit"
+            return self.sell(token, price, fraction=0.25 if healthy else 0.40)
         # Realize part of a strong gain only if market risk is not already critical.
         if (not pos.partial_taken and gain_pct >= 10
-                and (severe_selling or (previous is not None and price < previous * 0.97)
+                and net_return > 0 and (severe_selling or (previous is not None and price < previous * 0.97)
                      or (gain_pct >= 18 and price < pos.peak_price * 0.94))):
             pos.partial_taken = True
             pos.dynamic_stop_price = max(pos.dynamic_stop_price or 0, pos.entry_price * 1.01)
