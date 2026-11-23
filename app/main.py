@@ -118,7 +118,7 @@ def poll():
             MARKET["last_check"] = datetime.now(timezone.utc).isoformat()
         for chain in ("sol",):
             try:
-                found = fetch_rank(chain, limit=100)
+                found = fetch_rank(chain, limit=30)
                 tokens.extend(found)
                 chain_status[chain] = {"ok": True, "tokens": len(found)}
                 logging.info("GMGN %s returned %s tokens", chain, len(found))
@@ -207,9 +207,8 @@ def monitor_ohlcv():
                              chain, address[:8], len(candles), patterns, ohlcv_metrics())
         except Exception:
             logging.exception("OHLCV monitor failed")
-        # Public OHLCV endpoint returned repeated 429s; sample observationally
-        # every 15 minutes instead of every 2 minutes. Paper trading is unchanged.
-        time.sleep(max(0, 900 - (time.monotonic() - started)))
+        # One observational candidate every 30 minutes; exits remain independent.
+        time.sleep(max(0, 1800 - (time.monotonic() - started)))
 
 
 def monitor_post_exit():
@@ -553,7 +552,8 @@ def startup():
         logging.warning("Telegram Radar inactive: configure TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
     threading.Thread(target=poll, daemon=True, name="gmgn-paper").start()
     threading.Thread(target=signal_worker, daemon=True, name="radar-signals").start()
-    threading.Thread(target=swing_week_worker, daemon=True, name="swing-week").start()
+    # Swing7 currently rejects all entries without OHLCV; avoid redundant API scans.
+    logging.info("SWING7 paused: conserve API quota while OHLCV is observational")
     threading.Thread(target=monitor_exits, daemon=True, name="paper-exits").start()
     threading.Thread(target=monitor_post_exit, daemon=True, name="post-exit").start()
     threading.Thread(target=monitor_spot_prices, daemon=True, name="spot-monitor").start()
