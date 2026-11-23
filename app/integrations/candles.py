@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 
 _CACHE = {}
 _POOL_CACHE = {}
+_FAILURE_CACHE = {}
 _LOCK = threading.RLock()
 _NEXT_REQUEST = 0.0
 _COOLDOWN_UNTIL = 0.0
@@ -30,6 +31,8 @@ def _get(url):
         wait = max(0.0, _NEXT_REQUEST - now)
         if wait:
             time.sleep(wait)
+        if time.monotonic() < _COOLDOWN_UNTIL:
+            raise RateLimited("global OHLCV cooldown")
         _NEXT_REQUEST = time.monotonic() + 12.0
         _METRICS["requests"] += 1
     try:
@@ -42,7 +45,7 @@ def _get(url):
     except HTTPError as exc:
         if exc.code == 429:
             try:
-                delay = min(300.0, max(60.0, float(exc.headers.get("Retry-After", "60"))))
+                delay = max(60.0, float(exc.headers.get("Retry-After", "60")))
             except (ValueError, TypeError):
                 delay = 60.0
             with _LOCK:
@@ -63,10 +66,14 @@ def fetch_minute_candles(address, limit=40, chain="sol"):
     now = time.monotonic()
     with _LOCK:
         cached = _CACHE.get((chain, address))
+        retry_at = _FAILURE_CACHE.get((chain, address), 0.0)
+        blocked = now < max(retry_at, _COOLDOWN_UNTIL)
     if cached and now - cached[0] < (75 if cached[1] else 180):
         with _LOCK:
             _METRICS["cache_hits"] += 1
         return cached[1]
+    if blocked:
+        return []
     candles = []
     failed = False
     try:
@@ -115,10 +122,17 @@ def fetch_minute_candles(address, limit=40, chain="sol"):
         failed = True
         logging.warning("OHLCV unavailable token=%s error=%s status=%s", address[:8], type(exc).__name__, getattr(exc, "code", "n/a"))
     with _LOCK:
-        if not failed:
+        if failed:
+            _FAILURE_CACHE[(chain, address)] = max(time.monotonic() + 90, _COOLDOWN_UNTIL)
+        else:
+            _FAILURE_CACHE.pop((chain, address), None)
             _CACHE[(chain, address)] = (time.monotonic(), candles)
             if candles:
                 _METRICS["successful_candles"] += 1
+        if len(_FAILURE_CACHE) > 400:
+            for key, until in list(_FAILURE_CACHE.items()):
+                if until <= time.monotonic():
+                    _FAILURE_CACHE.pop(key, None)
         if len(_CACHE) > 400:
             _CACHE.clear()
         if len(_POOL_CACHE) > 400:
