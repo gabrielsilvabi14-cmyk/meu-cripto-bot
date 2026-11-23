@@ -2248,6 +2248,7 @@ def telegram_command_loop():
             log.warning("Paper Telegram inicialização: %s", str(exc)[:160])
             offset = 0
 
+    retry_delay = 5
     while True:
         try:
             query = urlencode({
@@ -2261,6 +2262,7 @@ def telegram_command_loop():
             )
             if not isinstance(data, dict) or data.get("ok") is not True:
                 raise RuntimeError("resposta inválida do Telegram getUpdates")
+            retry_delay = 5
             for update in data.get("result") or []:
                 handle_paper_command(update)
                 offset = int(update.get("update_id", offset)) + 1
@@ -2271,8 +2273,9 @@ def telegram_command_loop():
                 log.error("Paper Telegram pausado: getUpdates indisponível (webhook ou outro consumidor ativo).")
                 time.sleep(30)
             else:
-                log.warning("Paper Telegram: %s", message[:160])
-                time.sleep(5)
+                log.warning("Paper Telegram: %s; retry in %ss", message[:160], retry_delay)
+                time.sleep(retry_delay)
+                retry_delay = min(60, retry_delay * 2)
 
 
 # ============================================================
