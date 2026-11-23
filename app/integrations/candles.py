@@ -4,6 +4,7 @@ import logging
 import time
 import random
 import threading
+from app.integrations.gmgn import gecko_slot, gecko_cooldown
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -33,6 +34,8 @@ def _get(url):
             time.sleep(wait)
         if time.monotonic() < _COOLDOWN_UNTIL:
             raise RateLimited("global OHLCV cooldown")
+        if not gecko_slot():
+            raise RateLimited("shared GeckoTerminal budget")
         _NEXT_REQUEST = time.monotonic() + 12.0
         _METRICS["requests"] += 1
     try:
@@ -44,6 +47,7 @@ def _get(url):
         return payload
     except HTTPError as exc:
         if exc.code == 429:
+            gecko_cooldown(exc.headers)
             try:
                 delay = max(60.0, float(exc.headers.get("Retry-After", "60")))
             except (ValueError, TypeError):
